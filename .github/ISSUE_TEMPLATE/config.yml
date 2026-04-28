@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ❓ Question / how-to / general discussion
+    url: https://github.com/combycode/dpe/discussions
+    about: Questions and "how do I do X" go in Discussions, not Issues. Faster answers, better discoverability.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/combycode/dpe/security/advisories/new
+    about: Do NOT file public issues for security issues. Use a private advisory or email security@combycode.com.
+  - name: 💼 Commercial licensing
+    url: https://combycode.com/contact
+    about: Need terms beyond AGPL? Reach out for commercial licensing.

@@ -1,0 +1,55 @@
+# Rust
+/target/
+**/target/
+
+# Node / Bun
+node_modules/
+.bun/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Local environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Runner artefacts (regenerated per session — never commit)
+**/sessions/
+test-pipeline/standard/data/output/
+test-pipeline/standard/tools/*/meta.json
+test-pipeline/standard/tools/*/*.exe
+test-pipeline/standard/tools/*/*.so
+test-pipeline/standard/tools/*/*.dylib
+
+# Logs / temp
+*.log
+*.tmp
+
+# Coverage
+*.lcov
+coverage/
+htmlcov/
+
+# Local orxa CLI profile
+orxa.toml
+
+# Cached lint tooling (actionlint binary, downloaded on first lint run)
+scripts/.bin/

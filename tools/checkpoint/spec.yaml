@@ -1,0 +1,42 @@
+name: "checkpoint"
+runtime: "rust"
+description: "Buffer stdin to disk; release downstream only after all named gates report predicate_met."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    name:
+      type: string
+      required: true
+      description: "Checkpoint name — used for the spool subdirectory"
+    wait_for_gates:
+      type: array
+      items: { type: string }
+      minItems: 1
+      required: true
+      description: "List of gate names that must all report predicate_met before release"
+    gates_dir:
+      type: string
+      default: "$session/gates"
+      description: "Where to look up the gate state files"
+    spool_dir:
+      type: string
+      default: "$temp/checkpoint"
+      description: "Where the buffered envelopes are written during ingestion"
+    poll_ms:
+      type: integer
+      minimum: 50
+      default: 500
+      description: "Polling interval (ms) while waiting for gates"
+
+input:
+  description: "Any envelope. Buffered to disk during ingestion phase."
+
+output:
+  description: "Same envelopes, verbatim, in original order, after the gate barrier is crossed."
+
+# Three sequential phases:
+#   1. Ingestion — read stdin, append to <spool_dir>/<name>/buf.ndjson
+#   2. Wait      — poll <gates_dir>/<gate>.json until every wait_for_gates entry has predicate_met = true
+#   3. Release   — stream the spool to stdout, then delete the spool

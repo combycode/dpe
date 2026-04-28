@@ -1,0 +1,21 @@
+pipeline: standard
+variant: 02-read-normalize-write
+# Exercises: read-file-stream → normalize (uppercase) → write-file-stream.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  upper:
+    tool: normalize
+    settings:
+      rulebook:     "$configs/normalize/uppercase.yaml"
+      on_unmatched: passthrough
+      on_error:     trace
+    input: read
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/upper.ndjson", format: ndjson }
+    input: upper

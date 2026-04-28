@@ -1,0 +1,36 @@
+# Exclude build artefacts from build context to speed up + reduce image size.
+# Cargo rebuilds inside the container anyway.
+**/target
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv
+**/venv
+
+# Docker build doesn't need these
+.git
+.github
+*.log
+sessions
+runs
+out
+tmp
+temp
+
+# Per-repo build artefacts
+**/bun.lock
+**/Cargo.lock
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# But DO include what we need
+!docker/
+!dpe/
+!dpe-dev/
+!dpe-framework-rust/
+!dpe-framework-ts/
+!dpe-framework-python/
+!dpe-tool-*/

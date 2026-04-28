@@ -1,0 +1,66 @@
+version: "3.9"
+
+# DPE base + dev image builds + smoke tests.
+#
+# Build commands:
+#   docker compose -f docker/docker-compose.yml build base
+#   docker compose -f docker/docker-compose.yml build dev
+#
+# Run smoke (verifies base image works end-to-end):
+#   docker compose -f docker/docker-compose.yml run --rm smoke
+#
+# Interactive dev shell:
+#   docker compose -f docker/docker-compose.yml run --rm dev-shell
+
+services:
+
+  # ─── Base image ────────────────────────────────────────────────────────
+  base:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: base
+      args:
+        RUST_VERSION: "1.91"
+        BUN_VERSION:  "1.2.20"
+    image: combycode/dpe-base:${TAG:-latest}
+
+  # ─── Dev image (base + Rust toolchain + Claude CLI) ─────────────────────
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+      args:
+        RUST_VERSION:   "1.91"
+        BUN_VERSION:    "1.2.20"
+        CLAUDE_VERSION: "2.0.0"
+    image: combycode/dpe-dev:${TAG:-latest}
+
+  # ─── Smoke: verify the base image's core surface works ─────────────────
+  smoke:
+    image: combycode/dpe-base:${TAG:-latest}
+    command: >
+      bash -c "
+        set -e;
+        echo '=== dpe help ===';
+        dpe --help | head -10;
+        echo;
+        echo '=== dpe tools list ===';
+        dpe tools list;
+        echo;
+        echo '=== dpe init smoke-pipe ===';
+        dpe init smoke-pipe --out /tmp;
+        ls /tmp/smoke-pipe;
+        echo;
+        echo '=== OK ===';
+      "
+
+  # ─── Dev shell (interactive, with user's Claude auth passed through) ───
+  dev-shell:
+    image: combycode/dpe-dev:${TAG:-latest}
+    environment:
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+    stdin_open: true
+    tty: true
+    command: bash

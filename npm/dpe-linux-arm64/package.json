@@ -1,0 +1,18 @@
+{
+  "name": "@combycode/dpe-linux-arm64",
+  "version": "0.0.0-init",
+  "description": "linux-arm64 build of `dpe`. Internal -- install `dpe` instead.",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/combycode/dpe.git"
+  },
+  "homepage": "https://github.com/combycode/dpe#readme",
+  "os":  ["linux"],
+  "cpu": ["arm64"],
+  "files": ["bin/", "tools/", "catalog.json", "README.md"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,31 @@
+pipeline: standard
+variant: 03-gate-checkpoint
+# Exercises: gate → checkpoint coordination via session-level state.
+# scan-fs feeds gate; checkpoint releases when gate signals complete.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  gate:
+    tool: gate
+    settings:
+      name: "src-done"
+      expect_count: 0       # release on upstream EOF regardless of count
+      flush_every_rows: 1
+      flush_every_ms: 50
+    input: read
+
+  check:
+    tool: checkpoint
+    settings:
+      name: "wait-for-src"
+      wait_for_gates: ["src-done"]
+      poll_ms: 50
+    input: gate
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/coordinated.ndjson", format: ndjson }
+    input: check

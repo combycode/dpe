@@ -1,0 +1,25 @@
+name: "{{tool_name_kebab}}"
+runtime: "bun"
+description: "{{description}}"
+
+settings:
+  type: object
+  additionalProperties: false
+  # Define your settings here.
+
+input:
+  # Describe v.* shape expected per envelope.
+
+output:
+  # Describe v.* shape after your tool processes.
+
+tests:
+  - name: case-basic
+    description: "Passthrough — replace with your tool's acceptance cases"
+    settings: {}
+    input:
+      - '{"t":"d","id":"1","src":"seed","v":{"msg":"hello"}}'
+      - '{"t":"d","id":"2","src":"seed","v":{"msg":"world"}}'
+    expected:
+      - '{"t":"d","id":"1","src":"seed","v":{"msg":"hello"}}'
+      - '{"t":"d","id":"2","src":"seed","v":{"msg":"world"}}'

@@ -1,0 +1,42 @@
+# Tool specification — authoritative description for both humans and agents.
+#
+# Fields:
+#   name         — canonical tool name (kebab-case)
+#   runtime      — rust | bun | python
+#   description  — one-line purpose
+#   settings     — JSON schema for argv[1]
+#   input        — envelope contract (shape of v)
+#   output       — envelope contract
+#   tests        — acceptance cases (black-box: settings + input → expected)
+#
+# Each test case also lands in verify/<case-name>/{settings.json, input.ndjson, expected.ndjson}
+# `dpe-dev verify .` runs all of them.
+
+name: "{{tool_name_kebab}}"
+runtime: "rust"
+description: "{{description}}"
+
+settings:
+  type: object
+  additionalProperties: false
+  # Define your settings here.
+
+input:
+  # Describe v.* shape expected per envelope.
+  # Example:
+  #   properties:
+  #     text: { type: string, required: true }
+
+output:
+  # Describe v.* shape after your tool processes.
+
+tests:
+  - name: case-basic
+    description: "Passthrough — replace with your tool's acceptance cases"
+    settings: {}
+    input:
+      - '{"t":"d","id":"1","src":"seed","v":{"msg":"hello"}}'
+      - '{"t":"d","id":"2","src":"seed","v":{"msg":"world"}}'
+    expected:
+      - '{"t":"d","id":"1","src":"seed","v":{"msg":"hello"}}'
+      - '{"t":"d","id":"2","src":"seed","v":{"msg":"world"}}'

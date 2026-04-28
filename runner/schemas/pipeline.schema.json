@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://combycode.io/schemas/dpe/pipeline.schema.json",
+  "title": "DPE Pipeline Variant",
+  "description": "Schema for a single variant file under <pipeline>/variants/*.yaml|*.json",
+  "type": "object",
+  "required": ["pipeline", "variant", "stages"],
+  "additionalProperties": false,
+  "properties": {
+    "pipeline": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Pipeline name. Must match containing folder name."
+    },
+    "variant": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Variant name. Must match file basename (without extension)."
+    },
+    "extends": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Optional. Name of a variant (in the same pipeline) to inherit from."
+    },
+    "overrides": {
+      "type": "object",
+      "description": "Patches applied after extends load. Keys = stage names; values = partial stage configs deep-merged onto the base.",
+      "additionalProperties": { "$ref": "#/$defs/stagePartial" }
+    },
+    "settings": {
+      "$ref": "#/$defs/pipelineSettings"
+    },
+    "stages": {
+      "type": "object",
+      "description": "Map of stage-name → stage config. Stage names must be unique and match ^[a-z][a-z0-9-]*$.",
+      "patternProperties": {
+        "^[a-z][a-z0-9-]*$": { "$ref": "#/$defs/stage" }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    }
+  },
+  "$defs": {
+    "pipelineSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "trace_buffer": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_events":    { "type": "integer", "minimum": 1 },
+            "flush_ms":      { "type": "integer", "minimum": 1 },
+            "max_segment_bytes": { "type": "integer", "minimum": 1048576 }
+          }
+        },
+        "trace": {
+          "type": "boolean",
+          "description": "Pipeline-wide trace toggle. Default: true."
+        },
+        "cache_default_mode": {
+          "type": "string",
+          "enum": ["use", "refresh", "bypass", "off"]
+        }
+      }
+    },
+    "stage": {
+      "type": "object",
+      "required": ["tool"],
+      "additionalProperties": false,
+      "properties": {
+        "tool": {
+          "type": "string",
+          "description": "Tool name. Resolved via pipeline's tools/, then runner's tools_paths[], then built-in registry. Reserved names: route, filter."
+        },
+        "settings": {
+          "description": "Inline settings JSON passed to the tool. Mutually exclusive with settings_file.",
+          "anyOf": [
+            { "type": "object" },
+            { "type": "array" }
+          ]
+        },
+        "settings_file": {
+          "type": "string",
+          "description": "Path to external settings JSON file. Resolved relative to pipeline dir, or via $prefix."
+        },
+        "input": {
+          "description": "Upstream input. One of: another stage name, an array of stage names (fan-in), stage.channel (named channel from route), or $input for leaf stages.",
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+          ]
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Number of parallel instances. Runner handles fan-out on stdin and fan-in on stdout."
+        },
+        "replicas_routing": {
+          "type": "string",
+          "enum": ["round-robin", "hash-id", "least-busy"],
+          "default": "round-robin"
+        },
+        "trace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Per-stage trace toggle. When false, envelopes pass through without trace records."
+        },
+        "cache": {
+          "type": "string",
+          "enum": ["use", "refresh", "bypass", "off"],
+          "description": "Per-stage cache mode override. Default: pipeline-level cache_default_mode."
+        },
+        "on_error": {
+          "type": "string",
+          "enum": ["drop", "pass", "fail"],
+          "default": "drop",
+          "description": "Behavior when an expression (in route/filter) throws at runtime."
+        },
+        "routes": {
+          "type": "object",
+          "description": "For tool=route only. Map of channel-name → expression string.",
+          "patternProperties": {
+            "^[a-z][a-z0-9_-]*$": { "type": "string" }
+          },
+          "additionalProperties": false,
+          "minProperties": 1
+        },
+        "expression": {
+          "type": "string",
+          "description": "For tool=filter only. Boolean expression; envelope kept when true."
+        },
+        "on_false": {
+          "type": "string",
+          "enum": ["drop", "emit-meta", "emit-stderr"],
+          "default": "drop",
+          "description": "For tool=filter only. What to do when expression is false."
+        }
+      },
+      "allOf": [
+        {
+          "description": "settings and settings_file are mutually exclusive",
+          "not": {
+            "required": ["settings", "settings_file"]
+          }
+        },
+        {
+          "description": "route requires routes; filter requires expression",
+          "if": { "properties": { "tool": { "const": "route" } }, "required": ["tool"] },
+          "then": { "required": ["routes"] }
+        },
+        {
+          "if": { "properties": { "tool": { "const": "filter" } }, "required": ["tool"] },
+          "then": { "required": ["expression"] }
+        }
+      ]
+    },
+    "stagePartial": {
+      "description": "Stage config fragment used in overrides — all fields optional.",
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

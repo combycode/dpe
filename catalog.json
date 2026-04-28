@@ -1,0 +1,89 @@
+{
+  "version": "1",
+  "updated_at": "2026-04-23",
+  "comment": [
+    "Curated catalogue of shipped DPE tools.",
+    "url + sha256 fields are populated by CI on release tags. Until then",
+    "they may be empty; `dpe install <name>` prints an install hint",
+    "without fetching when URL is absent."
+  ],
+  "tools": {
+    "scan-fs": {
+      "description": "Filesystem scanner -- emits file / dir envelopes with optional hashing",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "scan-fs",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "read-file-stream": {
+      "description": "Stream envelopes from NDJSON / CSV / lines files",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "read-file-stream",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "write-file-stream": {
+      "description": "Append envelopes to files with LRU handle pool",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "write-file-stream",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "write-file-stream-hashed": {
+      "description": "Write-file with per-file content hash deduplication",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "write-file-stream-hashed",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "normalize": {
+      "description": "Row-level normaliser (dict / parse / rename / compute / template / require / to_object; profile dispatch)",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "normalize",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "gate": {
+      "description": "Stateful pass-through publishing progress; pair with checkpoint",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "gate",
+        "url_template": "",
+        "sha256": {}
+      }
+    },
+    "checkpoint": {
+      "description": "Spool stdin until referenced gate(s) report done",
+      "runtime": "rust",
+      "tier": "standard",
+      "version": "2.0.0-rc1",
+      "binary": {
+        "name": "checkpoint",
+        "url_template": "",
+        "sha256": {}
+      }
+    }
+  }
+}

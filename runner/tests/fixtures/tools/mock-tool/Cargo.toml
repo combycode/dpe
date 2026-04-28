@@ -1,0 +1,17 @@
+[package]
+name = "mock-tool"
+version = "0.1.0"
+edition = "2021"
+description = "Test fixture — configurable mock tool for DPE runner integration tests"
+
+# Empty workspace stanza disconnects this fixture from the monorepo workspace.
+# Needed because this crate is NOT a member of the parent workspace and we
+# want `cargo build` inside this directory to succeed standalone.
+[workspace]
+
+[dependencies]
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Intentionally depends on nothing else so it builds independently
+# and can be launched from runner tests without pulling the whole workspace.

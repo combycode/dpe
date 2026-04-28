@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "runner",
+    "dpe-dev",
+    "frameworks/rust",
+    "tools/scan-fs",
+    "tools/read-file-stream",
+    "tools/write-file-stream",
+    "tools/write-file-stream-hashed",
+    "tools/normalize",
+    "tools/gate",
+    "tools/checkpoint",
+]
+
+[workspace.package]
+edition     = "2021"
+license     = "AGPL-3.0-or-later"
+repository  = "https://github.com/combycode/dpe"
+
+# Release profile — strip symbols for smaller binaries.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+
+# Strict lints for every workspace member. Override per-crate only with a
+# documented reason. All warnings are errors.
+[workspace.lints.rust]
+unused           = { level = "deny", priority = -1 }
+dead_code        = "deny"
+unreachable_code = "deny"
+unreachable_pub  = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+all          = { level = "deny", priority = -1 }
+correctness  = { level = "deny", priority = -1 }
+suspicious   = { level = "deny", priority = -1 }
+# keep pedantic/perf opt-in per-crate; deny the high-signal groups above.

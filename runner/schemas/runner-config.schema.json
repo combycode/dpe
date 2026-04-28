@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://combycode.io/schemas/dpe/runner-config.schema.json",
+  "title": "DPE Runner Configuration",
+  "description": "Schema for runner's own config file (default ~/.dpe/config.toml). TOML/JSON/YAML input; this schema describes the parsed structure.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "tools_paths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Additional tool directories searched in order after a pipeline's tools/ folder, before the built-in registry."
+    },
+    "control_pipe": {
+      "type": "string",
+      "description": "Override default control pipe location. Default: $session/control.sock (Unix) or \\\\.\\pipe\\dpe-<session-id> (Windows)."
+    },
+    "logger_pipe": {
+      "type": "string",
+      "description": "Optional outbound pipe to external logger. If unset, runner writes logs to $session/logs/*."
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_events": { "type": "integer", "minimum": 1, "default": 10000 },
+        "flush_ms":   { "type": "integer", "minimum": 1, "default": 1000 },
+        "max_segment_bytes": { "type": "integer", "minimum": 1048576, "default": 268435456 },
+        "max_labels_per_record": { "type": "integer", "minimum": 1, "default": 10 },
+        "max_labels_chars_total": { "type": "integer", "minimum": 1, "default": 1000 }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_mode": {
+          "type": "string",
+          "enum": ["use", "refresh", "bypass", "off"],
+          "default": "use"
+        },
+        "shard_depth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4,
+          "default": 2,
+          "description": "Number of hex chars of the cache key used as a subdirectory."
+        }
+      }
+    },
+    "spawn": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_restarts": { "type": "integer", "minimum": 0, "default": 3 },
+        "restart_backoff_ms": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "default": [500, 2000, 5000]
+        },
+        "sigterm_grace_ms": { "type": "integer", "minimum": 0, "default": 10000 }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recommended_max_sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50,
+          "description": "Informational only — runner does not auto-prune."
+        }
+      }
+    }
+  }
+}

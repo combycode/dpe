@@ -1,0 +1,32 @@
+{
+  "name": "dpe-dev",
+  "version": "2.0.0-rc1",
+  "description": "DPE tool-authoring CLI -- scaffold, build, test, verify",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/combycode/dpe.git"
+  },
+  "homepage": "https://github.com/combycode/dpe#readme",
+  "bin": {
+    "dpe-dev": "bin/dpe-dev.js"
+  },
+  "files": [
+    "bin/dpe-dev.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "optionalDependencies": {
+    "@combycode/dpe-dev-linux-x64":    "2.0.0-rc1",
+    "@combycode/dpe-dev-linux-arm64":  "2.0.0-rc1",
+    "@combycode/dpe-dev-darwin-x64":   "2.0.0-rc1",
+    "@combycode/dpe-dev-darwin-arm64": "2.0.0-rc1",
+    "@combycode/dpe-dev-win32-x64":    "2.0.0-rc1"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

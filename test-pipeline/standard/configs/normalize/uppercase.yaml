@@ -1,0 +1,4 @@
+rules:
+  - path: v.text
+    op: case
+    to: upper

@@ -1,0 +1,10 @@
+{
+  "name": "write-file-stream",
+  "version": "0.1.0",
+  "description": "Append NDJSON/CSV/lines rows to files. LRU-bounded handle pool, idle auto-close, periodic flush.",
+  "runtime": "rust",
+  "entry": "target/release/write-file-stream",
+  "run": "cargo run --release --",
+  "build": "cargo build --release",
+  "test": "cargo test"
+}

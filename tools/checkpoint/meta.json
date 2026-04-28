@@ -1,0 +1,8 @@
+{
+  "name": "checkpoint",
+  "version": "0.1.0",
+  "description": "Spool stdin to disk; release to stdout after all wait_for_gates show predicate_met=true.",
+  "runtime": "rust",
+  "entry": "target/release/checkpoint",
+  "run": "cargo run --release --"
+}

@@ -1,0 +1,47 @@
+name: "write-file-stream"
+runtime: "rust"
+description: "Append envelopes to files. LRU-bounded handle pool, periodic flush, automatic mkdir; safe for many-files-at-once workloads."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    default_file:
+      type: string
+      required: true
+      description: "Path used when input envelope's `v.file` is absent"
+    format:
+      type: string
+      enum: ["ndjson", "lines", "csv"]
+      default: "ndjson"
+    max_open:
+      type: integer
+      minimum: 1
+      default: 32
+      description: "LRU cap on concurrent open file handles"
+    idle_close_ms:
+      type: integer
+      minimum: 0
+      default: 30000
+      description: "Close handles idle longer than this (milliseconds)"
+    flush_every:
+      type: integer
+      minimum: 1
+      default: 1000
+      description: "Flush after N rows per file"
+    csv_header:
+      type: array
+      items: { type: string }
+      description: "csv only — column order; first write to each file emits header row"
+
+input:
+  description: "Envelope to append. If `v.row` is absent, the whole `v` is written."
+  properties:
+    file:
+      type: string
+      description: "Optional override of settings.default_file"
+    row:
+      description: "Payload to write (any JSON value or object matching csv_header)"
+
+output:
+  description: "Pass-through (the same envelope), so downstream stages can chain."

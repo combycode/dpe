@@ -1,0 +1,38 @@
+{
+  "name": "@combycode/dpe-framework-ts",
+  "version": "2.0.0-rc1",
+  "description": "DPE framework for building streaming pipeline tools in TypeScript/Bun",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/combycode/dpe.git",
+    "directory": "frameworks/ts"
+  },
+  "homepage": "https://github.com/combycode/dpe#readme",
+  "type": "module",
+  "main": "src/index.ts",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "ajv": "^8.17.1",
+    "typescript": "^5.9.0"
+  },
+  "files": [
+    "src/",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

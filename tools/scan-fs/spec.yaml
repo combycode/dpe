@@ -1,0 +1,74 @@
+name: "scan-fs"
+runtime: "rust"
+description: "Filesystem scanner — emits file / dir envelopes with optional hashing. Supports diff mode against a prior run."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    mode:
+      type: string
+      enum: ["full", "diff"]
+      default: "full"
+      description: "full = every match emitted; diff = only changes against prior input envelopes"
+    return:
+      type: string
+      enum: ["files", "dirs", "both"]
+      default: "files"
+      description: "Whether to emit file entries, dir entries, or both"
+    include:
+      oneOf:
+        - { type: string }
+        - { type: array, items: { type: string } }
+      description: "Glob(s) — semicolon-separated string OR array of patterns"
+    exclude:
+      type: array
+      items: { type: string }
+      default: []
+      description: "Glob(s) to skip"
+    depth:
+      oneOf:
+        - { type: integer, minimum: 0 }
+        - { type: "null" }
+      default: null
+      description: "Max recursion depth; null = unlimited"
+    hidden:
+      type: boolean
+      default: false
+      description: "Include dotfiles / hidden directories"
+    follow_symlinks:
+      type: boolean
+      default: false
+    hash:
+      type: string
+      enum: ["xxhash", "blake2b", "none"]
+      default: "none"
+      description: "Optional content hash on each file"
+
+input:
+  description: "One envelope per directory to scan."
+  properties:
+    path:
+      type: string
+      required: true
+      description: "Absolute path to the directory"
+
+output:
+  description: "One envelope per matching file or directory."
+  properties:
+    path:    { type: string,  description: "Absolute path of the entry" }
+    type:    { type: string,  enum: ["file", "dir"] }
+    size:    { type: integer, description: "File size in bytes (omitted for dirs)" }
+    mtime:   { type: integer, description: "Modification time, unix epoch seconds" }
+    hash:    { type: string,  description: "Hex-encoded content hash (only when settings.hash != none)" }
+
+tests:
+  - name: case-basic
+    description: "Scan a small fixture, expect two file envelopes."
+    settings:
+      mode: "full"
+      return: "files"
+      hash: "none"
+    input:
+      - '{"t":"d","id":"seed","src":"seed","v":{"path":"/tmp/scan-fixture"}}'
+    expected: []  # populated by `dpe-dev verify` bootstrap on first run

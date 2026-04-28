@@ -1,0 +1,21 @@
+[package]
+name = "combycode-dpe-tool-writefile"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "DPE tool -- append-only NDJSON/CSV/lines stream writer with LRU handle pool"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/combycode/dpe-tool-writefile"
+
+[dependencies]
+combycode-dpe = { path = "../../frameworks/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+
+[[bin]]
+name = "write-file-stream"
+path = "src/main.rs"
+
+
+[lints]
+workspace = true

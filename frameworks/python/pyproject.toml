@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "combycode-dpe"
+version = "2.0.0rc1"
+description = "DPE framework for building streaming pipeline tools in Python"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "jsonschema>=4.20", "mypy>=1.10"]
+
+[project.urls]
+Repository = "https://github.com/combycode/dpe-framework-python"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dpe"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["template"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/dpe"]
+# Pragmatic strictness: catch real type bugs without forcing every helper
+# to carry full annotations. Bump to `strict = true` in a follow-up pass
+# when the codebase is fully annotated.
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+check_untyped_defs = false

@@ -1,0 +1,66 @@
+name: "uppercase-text"
+runtime: "bun"
+description: "Uppercase the v.text field on every data envelope. Optionally prefix the result with a marker."
+
+settings:
+  type: object
+  properties:
+    marker:
+      type: string
+      description: "Optional string prepended to the uppercase result."
+      default: ""
+  additionalProperties: false
+
+input:
+  v:
+    type: object
+    properties:
+      text:
+        type: string
+        required: true
+
+output:
+  v:
+    type: object
+    properties:
+      text:
+        type: string
+        description: "marker + input.text.toUpperCase()"
+
+tests:
+  - name: plain-uppercase
+    description: "Empty marker — just uppercases the text field."
+    settings: {}
+    input:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"hello"}}'
+      - '{"t":"d","id":"2","src":"s","v":{"text":"world"}}'
+    expected:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"HELLO"}}'
+      - '{"t":"d","id":"2","src":"s","v":{"text":"WORLD"}}'
+
+  - name: with-marker
+    description: "Marker prepended to uppercased text."
+    settings:
+      marker: "UP:"
+    input:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"hi"}}'
+      - '{"t":"d","id":"2","src":"s","v":{"text":"there"}}'
+    expected:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"UP:HI"}}'
+      - '{"t":"d","id":"2","src":"s","v":{"text":"UP:THERE"}}'
+
+  - name: preserve-other-fields
+    description: "Other fields of v pass through unchanged."
+    settings: {}
+    input:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"ok","amount":42,"flag":true}}'
+    expected:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"OK","amount":42,"flag":true}}'
+
+  - name: unicode
+    description: "Non-ASCII characters must be uppercased per locale-agnostic rules."
+    settings: {}
+    input:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"café"}}'
+    expected:
+      - '{"t":"d","id":"1","src":"s","v":{"text":"CAFÉ"}}'

@@ -1,0 +1,13 @@
+pipeline: standard
+variant: 01-scan-write
+# Exercises: scan-fs → write-file-stream. Seed envelope points at a dir.
+stages:
+  scan:
+    tool: scan-fs
+    settings: { include: "*", hash: none, return: files }
+    input: $input
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/scanned.ndjson", format: ndjson }
+    input: scan

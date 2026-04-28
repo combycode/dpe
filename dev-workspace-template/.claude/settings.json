@@ -1,0 +1,22 @@
+{
+  "defaultMode": "dontAsk",
+  "permissions": {
+    "allow": [
+      "Bash(cargo *)",
+      "Bash(bun *)",
+      "Bash(python *)",
+      "Bash(pytest *)",
+      "Bash(pip *)",
+      "Bash(uv *)",
+      "Bash(powershell *)",
+      "Bash(pwsh *)",
+      "Bash(dpe-dev *)",
+      "Bash(dpe *)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep"
+    ]
+  }
+}

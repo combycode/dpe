@@ -1,0 +1,10 @@
+{
+  "name": "mock-tool",
+  "version": "0.1.0",
+  "description": "Configurable mock tool for DPE runner tests",
+  "runtime": "rust",
+  "entry": "target/release/mock-tool",
+  "run": "cargo run --release --",
+  "build": "cargo build --release",
+  "test": "cargo test"
+}

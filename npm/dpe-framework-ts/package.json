@@ -1,0 +1,15 @@
+{
+  "name": "@combycode/dpe-framework-ts",
+  "version": "0.0.0-init",
+  "description": "DPE framework for building streaming pipeline tools in TypeScript / Bun",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/combycode/dpe.git"
+  },
+  "homepage": "https://github.com/combycode/dpe#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

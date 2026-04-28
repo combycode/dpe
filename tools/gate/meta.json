@@ -1,0 +1,8 @@
+{
+  "name": "gate",
+  "version": "0.1.0",
+  "description": "Pass-through that writes a gate state file periodically, marking predicate_met when count reaches expect_count or on EOF.",
+  "runtime": "rust",
+  "entry": "target/release/gate",
+  "run": "cargo run --release --"
+}

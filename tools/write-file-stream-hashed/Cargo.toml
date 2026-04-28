@@ -1,0 +1,23 @@
+[package]
+name = "combycode-dpe-tool-writefile-hashed"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "DPE tool -- append-only stream writer with hash-based deduplication"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/combycode/dpe-tool-writefile-hashed"
+
+[dependencies]
+combycode-dpe = { path = "../../frameworks/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+blake2 = "0.10"
+
+[[bin]]
+name = "write-file-stream-hashed"
+path = "src/main.rs"
+
+
+[lints]
+workspace = true

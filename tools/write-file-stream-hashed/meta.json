@@ -1,0 +1,10 @@
+{
+  "name": "write-file-stream-hashed",
+  "version": "0.1.0",
+  "description": "Append rows to files with hash-based deduplication. Maintains <file>.hashidx sidecar; rebuilds from content on mismatch.",
+  "runtime": "rust",
+  "entry": "target/release/write-file-stream-hashed",
+  "run": "cargo run --release --",
+  "build": "cargo build --release",
+  "test": "cargo test"
+}

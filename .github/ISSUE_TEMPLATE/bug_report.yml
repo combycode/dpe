@@ -1,0 +1,92 @@
+name: 🐞 Bug report
+description: Something works incorrectly or not at all
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please fill in as much detail as you can — minimal reproductions get fixed faster than vague descriptions.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Briefly — what did you do, what did you expect, what happened instead?
+      placeholder: "When I run `dpe run my-pipe:main`, ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands / files. The smaller the repro, the faster the fix.
+      render: bash
+      placeholder: |
+        # 1. dpe init my-pipe
+        # 2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+      placeholder: |
+        Expected: ...
+        Actual:   ...
+    validations:
+      required: true
+
+  - type: input
+    id: dpe_version
+    attributes:
+      label: DPE version
+      description: Output of `dpe --version` (or the version in your install — npm / Docker tag / package.json).
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: How did you install DPE?
+      options:
+        - npm install -g dpe
+        - Docker (ghcr.io/combycode/dpe-base)
+        - Docker (ghcr.io/combycode/dpe-dev)
+        - From source (cargo build)
+        - Other (describe in summary)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Host OS
+      options:
+        - Linux (x64)
+        - Linux (arm64)
+        - macOS (x64 / Intel)
+        - macOS (arm64 / Apple Silicon)
+        - Windows
+        - Inside a container (specify base in summary)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Output from `dpe logs <session>`, runner stderr, or the failed command. Use a code block.
+      render: text
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm on the latest minor release of `2.x` (or have a reason to be on an older version).
+          required: true

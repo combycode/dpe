@@ -1,0 +1,58 @@
+name: 💡 Feature request
+description: Propose a new feature or capability
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Open-ended discussions are better suited for [Discussions](https://github.com/combycode/dpe/discussions); use this template when you have a concrete proposal.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What real-world need or limitation prompted this? What are you trying to do that you can't today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed solution
+      description: How do you imagine this would work? Concrete example (CLI invocation, YAML snippet, API shape) is most useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you weighed and why you preferred the one above.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which component(s) does this affect?
+      multiple: true
+      options:
+        - dpe runner (CLI, DAG, IPC)
+        - dpe-dev (scaffolding / verify)
+        - frameworks/rust
+        - frameworks/ts
+        - frameworks/python
+        - one of the standard tools (specify in problem)
+        - documentation
+        - CI / release tooling
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: This is a feature proposal, not a bug report (use the bug template for bugs).
+          required: true

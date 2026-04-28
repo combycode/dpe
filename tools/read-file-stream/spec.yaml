@@ -1,0 +1,47 @@
+name: "read-file-stream"
+runtime: "rust"
+description: "Stream rows from a text file: NDJSON, plain lines, or CSV (optional header → object mapping)."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    format:
+      type: string
+      enum: ["ndjson", "lines", "csv"]
+      default: "ndjson"
+    skip:
+      type: integer
+      minimum: 0
+      default: 0
+      description: "Skip N leading lines per file"
+    limit:
+      oneOf:
+        - { type: integer, minimum: 0 }
+        - { type: "null" }
+      default: null
+      description: "Stop after N rows per file; null = read all"
+    csv_header:
+      type: boolean
+      default: true
+      description: "csv only — row 0 as field names; rows become objects keyed by header"
+    csv_delim:
+      type: string
+      default: ","
+      description: "csv only — single-byte delimiter"
+
+input:
+  description: "One envelope per file to read."
+  properties:
+    path:
+      type: string
+      required: true
+      description: "Absolute path to the file"
+
+output:
+  description: |
+    One envelope per row. Payload shape depends on `format`:
+      - ndjson: parsed JSON value of the row
+      - lines:  { line: string }
+      - csv (header on):  object keyed by header columns
+      - csv (header off): { row: [<cell>, ...] }

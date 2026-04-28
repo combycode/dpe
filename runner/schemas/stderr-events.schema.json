@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/combycode/dpe/runner/schemas/stderr-events.schema.json",
+  "title": "DPE stderr event",
+  "description": "Typed events emitted to stderr by tool framework runtimes. One JSON object per line. Discriminated by the `type` field. Every framework (Rust / TS / Python) MUST emit exactly these shapes; the per-language conformance test validates this.",
+  "oneOf": [
+    { "$ref": "#/$defs/log" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/trace" },
+    { "$ref": "#/$defs/stats" }
+  ],
+  "$defs": {
+    "log": {
+      "title": "log",
+      "description": "Structured log line emitted by ctx.log(msg, level). Tool authors may attach arbitrary extra fields.",
+      "type": "object",
+      "required": ["type", "level", "msg"],
+      "properties": {
+        "type":  { "const": "log" },
+        "level": { "type": "string", "enum": ["debug", "info", "warn", "error"] },
+        "msg":   { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "error": {
+      "title": "error",
+      "description": "Per-row error from ctx.error(v, msg). Carries the original input envelope's id/src so the runner can reconstruct provenance.",
+      "type": "object",
+      "required": ["type", "error", "input", "id", "src"],
+      "properties": {
+        "type":  { "const": "error" },
+        "error": { "type": "string" },
+        "input": true,
+        "id":    { "type": "string" },
+        "src":   { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "trace": {
+      "title": "trace",
+      "description": "Merged trace event emitted by the framework on every ctx.output(). The runner appends these to the session trace log; tool code never emits this directly.",
+      "type": "object",
+      "required": ["type", "id", "src", "labels"],
+      "properties": {
+        "type":   { "const": "trace" },
+        "id":     { "type": "string" },
+        "src":    { "type": "string" },
+        "labels": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "stats": {
+      "title": "stats",
+      "description": "Free-form per-tool statistics emitted by ctx.stats(obj). Schema only fixes the discriminator; everything else is tool-specific.",
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "const": "stats" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

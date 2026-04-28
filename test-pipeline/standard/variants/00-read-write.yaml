@@ -1,0 +1,14 @@
+pipeline: standard
+variant: 00-read-write
+# Roundtrip: read the seed NDJSON → write it out. No transform.
+# Exercises: read-file-stream, write-file-stream.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/roundtrip.ndjson", format: ndjson }
+    input: read

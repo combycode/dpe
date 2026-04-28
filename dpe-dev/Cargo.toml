@@ -1,0 +1,33 @@
+[package]
+name = "dpe-dev"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "Tool development CLI: scaffold, build, test, verify tools for DPE pipelines"
+license = "AGPL-3.0-or-later"
+
+[[bin]]
+name = "dpe-dev"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: keep object-key insertion order in parsed Values.
+# Matches workspace-wide unified feature; ensures canon_json is deterministic
+# both in standalone cargo test -p dpe-dev and in cargo test --workspace.
+serde_json = { version = "1", features = ["preserve_order"] }
+serde-saphyr = "0.0.25"
+toml = "1.1"
+anyhow = "1"
+thiserror = "2"
+walkdir = "2"
+pathdiff = "0.2"
+dirs = "6"
+include_dir = "0.7"
+
+[dev-dependencies]
+tempfile = "3"
+
+
+[lints]
+workspace = true

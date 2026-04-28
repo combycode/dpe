@@ -1,0 +1,10 @@
+{
+  "name": "{{tool_name_kebab}}",
+  "version": "0.1.0",
+  "description": "{{description}}",
+  "runtime": "python",
+  "entry": "src/{{tool_name_snake}}/main.py",
+  "run": "python src/{{tool_name_snake}}/main.py",
+  "build": "pip install -e .",
+  "test": "pytest"
+}

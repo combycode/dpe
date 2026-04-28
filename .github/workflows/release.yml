@@ -1,0 +1,634 @@
+name: Release
+
+# Tag-triggered release. Builds + publishes everything in one workflow run:
+#   - 5 platform native binary builds (linux x64/arm64, darwin x64/arm64, win32 x64)
+#   - PyPI:    combycode-dpe (Python framework)
+#   - crates.io: combycode-dpe (Rust framework, skip-if-already-uploaded)
+#   - npm:     @combycode/dpe-framework-ts
+#              @combycode/dpe-<os>-<cpu>      (5 platform sub-packages)
+#              @combycode/dpe-dev-<os>-<cpu>  (5 platform sub-packages)
+#              dpe         (top-level wrapper)
+#              dpe-dev     (top-level wrapper)
+#   - GHCR:    ghcr.io/combycode/dpe-base, dpe-dev
+#   - GH Release: per-platform binary tarballs + per-tool tarballs +
+#                 rewritten catalog.json with real download URLs.
+#
+# `workflow_dispatch` triggers a build-only dry-run (no publish, no tags pushed
+# to registries) so the matrix can be validated without cutting a tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents:  write
+  packages:  write
+  id-token:  write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY:    ghcr.io
+  IMAGE_OWNER: ${{ github.repository_owner }}
+  CARGO_TERM_COLOR: always
+  IS_PUBLISH:  ${{ github.event_name == 'push' }}
+
+jobs:
+  # ─── version: derive semver + PEP 440 + npm dist-tag from the tag ──────
+  version:
+    name: derive version
+    runs-on: ubuntu-latest
+    outputs:
+      semver:  ${{ steps.v.outputs.semver }}
+      pep440:  ${{ steps.v.outputs.pep440 }}
+      # npm dist-tag — "rc" for any semver prerelease (2.0.0-rc1, 2.0.0-beta2),
+      # empty for stable releases (npm defaults to `latest` then). npm errors
+      # out without --tag on prerelease publishes.
+      npm_tag: ${{ steps.v.outputs.npm_tag }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            semver="0.0.0-dryrun"
+            pep440="0.0.0.dev0"
+            npm_tag="dryrun"
+          else
+            semver="${GITHUB_REF_NAME#v}"
+            # PEP 440: replace -rc1 -> rc1, -beta1 -> b1, -alpha1 -> a1
+            pep440="${semver//-rc/rc}"
+            pep440="${pep440//-beta/b}"
+            pep440="${pep440//-alpha/a}"
+            # Prerelease detection: any semver containing a hyphen after the
+            # initial X.Y.Z is a prerelease per semver.org §9.
+            if [[ "$semver" == *-* ]]; then npm_tag="rc"; else npm_tag=""; fi
+          fi
+          {
+              echo "semver=$semver"
+              echo "pep440=$pep440"
+              echo "npm_tag=$npm_tag"
+          } >> "$GITHUB_OUTPUT"
+
+  # ─── build matrix: 5 platforms × 9 binaries ─────────────────────────────
+  build:
+    name: build (${{ matrix.npm_tag }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,   target: x86_64-unknown-linux-gnu,   npm_tag: linux-x64,    runner_tag: linux-amd64,    cross: false }
+          - { os: ubuntu-latest,   target: aarch64-unknown-linux-gnu,  npm_tag: linux-arm64,  runner_tag: linux-arm64,    cross: true  }
+          # darwin-x64 cross-compiles from arm64 macos-latest. macos-13 was
+          # retired by GitHub in late 2025; macos-15-intel is paid; the
+          # cross-target route is free and proven.
+          - { os: macos-latest,    target: x86_64-apple-darwin,        npm_tag: darwin-x64,   runner_tag: darwin-amd64,   cross: false }
+          - { os: macos-latest,    target: aarch64-apple-darwin,       npm_tag: darwin-arm64, runner_tag: darwin-arm64,   cross: false }
+          - { os: windows-latest,  target: x86_64-pc-windows-msvc,     npm_tag: win32-x64,    runner_tag: windows-amd64,  cross: false }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.91'
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross (linux-arm64)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build workspace
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} --workspace
+          else
+            cargo build --release --target ${{ matrix.target }} --workspace
+          fi
+
+      - name: Stage binaries + per-tool dirs
+        shell: bash
+        run: |
+          ext=""
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then ext=".exe"; fi
+          src="target/${{ matrix.target }}/release"
+          mkdir -p dist/bin dist/tools
+          cp "$src/dpe$ext"      dist/bin/dpe$ext
+          cp "$src/dpe-dev$ext"  dist/bin/dpe-dev$ext
+          if [ -z "$ext" ]; then chmod +x dist/bin/dpe dist/bin/dpe-dev; fi
+          # Standard-tool layout: place each binary under tools/<name>/target/release/
+          # to match the meta.json's `entry: target/release/<name>` field. Doing the
+          # mirror at staging time means npm sub-packages, GH Release tarballs, and
+          # the Docker base image all use the same packaged layout — no per-target
+          # meta.json rewrites needed.
+          for t in scan-fs read-file-stream write-file-stream write-file-stream-hashed normalize gate checkpoint; do
+            mkdir -p "dist/tools/$t/target/release"
+            cp "$src/$t$ext" "dist/tools/$t/target/release/$t$ext"
+            if [ -z "$ext" ]; then chmod +x "dist/tools/$t/target/release/$t"; fi
+            cp "tools/$t/meta.json" "dist/tools/$t/"
+            if [ -f "tools/$t/spec.yaml" ]; then cp "tools/$t/spec.yaml" "dist/tools/$t/"; fi
+            if [ -f "tools/$t/README.md" ]; then cp "tools/$t/README.md" "dist/tools/$t/"; fi
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.npm_tag }}
+          path: dist/
+          retention-days: 7
+
+  # ─── crates.io: skip if version already uploaded ────────────────────────
+  publish-crates-io:
+    name: publish crates.io
+    needs: version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: '1.91' }
+
+      - name: Auth via OIDC
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish (skip if version exists)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        shell: bash
+        run: |
+          ver="${{ needs.version.outputs.semver }}"
+          # cargo search prints `combycode-dpe = "X.Y.Z"` for the latest. If
+          # the index already has our version, abort cleanly.
+          if cargo search combycode-dpe --limit 1 | grep -q "\"$ver\""; then
+            echo "combycode-dpe@$ver already on crates.io — skipping publish"
+            exit 0
+          fi
+          # Bump version in Cargo.toml, then publish.
+          sed -i "s/^version = \".*\"/version = \"$ver\"/" frameworks/rust/Cargo.toml
+          cd frameworks/rust && cargo publish --allow-dirty
+
+  # ─── PyPI: build + Trusted Publishing upload ────────────────────────────
+  publish-pypi:
+    name: publish PyPI
+    needs: version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: { python-version: '3.13' }
+
+      - name: Build sdist + wheel
+        working-directory: frameworks/python
+        shell: bash
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ needs.version.outputs.pep440 }}\"/" pyproject.toml
+          pip install --quiet build
+          python -m build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: frameworks/python/dist/
+          # Idempotency: a re-run on the same tag must not fail when this
+          # version is already on PyPI (PyPI rejects same-version uploads).
+          skip-existing: true
+
+  # ─── npm framework (TS) ─────────────────────────────────────────────────
+  publish-framework-ts:
+    name: publish framework-ts
+    needs: version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Bump version + publish (idempotent)
+        working-directory: frameworks/ts
+        shell: bash
+        env:
+          SEMVER:  ${{ needs.version.outputs.semver }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+        run: |
+          pkg=$(jq -r .name package.json)
+          if npm view "$pkg@$SEMVER" version >/dev/null 2>&1; then
+            echo "$pkg@$SEMVER already on npm — skip"; exit 0
+          fi
+          npm pkg set "version=$SEMVER"
+          # Use a bash array so each element is properly quoted: shellcheck
+          # SC2086 flags unquoted $var expansion of multi-word strings.
+          tag_args=()
+          if [ -n "$NPM_TAG" ]; then tag_args=(--tag "$NPM_TAG"); fi
+          npm publish --provenance --access public "${tag_args[@]}"
+
+  # ─── npm platform sub-packages: dpe (5 jobs, parallel) ──────────────────
+  publish-npm-platform-dpe:
+    name: publish dpe-${{ matrix.npm_tag }}
+    needs: [build, catalog, version]
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        npm_tag: [linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64]
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.npm_tag }}
+          path: dist/
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-staged
+          path: staged/
+
+      - name: Stage + publish (idempotent)
+        working-directory: npm/dpe-${{ matrix.npm_tag }}
+        shell: bash
+        env:
+          SEMVER:  ${{ needs.version.outputs.semver }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+        run: |
+          pkg=$(jq -r .name package.json)
+          if npm view "$pkg@$SEMVER" version >/dev/null 2>&1; then
+            echo "$pkg@$SEMVER already on npm — skip"; exit 0
+          fi
+          ext=""
+          if [ "${{ matrix.npm_tag }}" = "win32-x64" ]; then ext=".exe"; fi
+          mkdir -p bin tools
+          cp "../../dist/bin/dpe$ext" bin/
+          cp -r ../../dist/tools/. tools/
+          # Restore +x on every binary that landed in the package: upload-artifact
+          # @v4+ uses ZIP and strips Unix exec bits, so we re-set them now,
+          # AFTER cp, so the npm tarball preserves them on consumer install.
+          if [ -z "$ext" ]; then
+            chmod +x bin/dpe
+            for t in scan-fs read-file-stream write-file-stream write-file-stream-hashed normalize gate checkpoint; do
+              chmod +x "tools/$t/target/release/$t"
+            done
+          fi
+          # Use the rewritten catalog from the catalog job — it has populated
+          # url_template + sha256 fields. The source-tree catalog.json has empty
+          # url fields and would make `dpe install` fail at runtime.
+          cp ../../staged/catalog.json .
+          npm pkg set "version=$SEMVER"
+          # Use a bash array so each element is properly quoted: shellcheck
+          # SC2086 flags unquoted $var expansion of multi-word strings.
+          tag_args=()
+          if [ -n "$NPM_TAG" ]; then tag_args=(--tag "$NPM_TAG"); fi
+          npm publish --provenance --access public "${tag_args[@]}"
+
+  # ─── npm platform sub-packages: dpe-dev (5 jobs, parallel) ──────────────
+  publish-npm-platform-dpe-dev:
+    name: publish dpe-dev-${{ matrix.npm_tag }}
+    needs: [build, version]
+    if: github.event_name == 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        npm_tag: [linux-x64, linux-arm64, darwin-x64, darwin-arm64, win32-x64]
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+      - uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.npm_tag }}
+          path: dist/
+
+      - name: Stage + publish (idempotent)
+        working-directory: npm/dpe-dev-${{ matrix.npm_tag }}
+        shell: bash
+        env:
+          SEMVER:  ${{ needs.version.outputs.semver }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+        run: |
+          pkg=$(jq -r .name package.json)
+          if npm view "$pkg@$SEMVER" version >/dev/null 2>&1; then
+            echo "$pkg@$SEMVER already on npm — skip"; exit 0
+          fi
+          ext=""
+          if [ "${{ matrix.npm_tag }}" = "win32-x64" ]; then ext=".exe"; fi
+          mkdir -p bin
+          cp "../../dist/bin/dpe-dev$ext" bin/
+          # Restore +x stripped by upload-artifact@v4+ ZIP roundtrip.
+          if [ -z "$ext" ]; then chmod +x bin/dpe-dev; fi
+          npm pkg set "version=$SEMVER"
+          # Use a bash array so each element is properly quoted: shellcheck
+          # SC2086 flags unquoted $var expansion of multi-word strings.
+          tag_args=()
+          if [ -n "$NPM_TAG" ]; then tag_args=(--tag "$NPM_TAG"); fi
+          npm publish --provenance --access public "${tag_args[@]}"
+
+  # ─── npm wrapper: dpe (top-level dispatcher) ────────────────────────────
+  publish-npm-wrapper-dpe:
+    name: publish wrapper dpe
+    needs: [publish-npm-platform-dpe, version]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Bump version + publish (idempotent)
+        working-directory: runner
+        shell: bash
+        env:
+          SEMVER:  ${{ needs.version.outputs.semver }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+        run: |
+          pkg=$(jq -r .name package.json)
+          if npm view "$pkg@$SEMVER" version >/dev/null 2>&1; then
+            echo "$pkg@$SEMVER already on npm — skip"; exit 0
+          fi
+          # Update version + pin every optionalDependencies entry to the
+          # same version. `npm pkg set` mishandles quotes for scoped keys
+          # (`@combycode/...`) so we edit the JSON directly with jq.
+          jq --arg v "$SEMVER" '
+            .version = $v
+            | .optionalDependencies |= with_entries(.value = $v)
+          ' package.json > package.json.tmp && mv package.json.tmp package.json
+          # Use a bash array so each element is properly quoted: shellcheck
+          # SC2086 flags unquoted $var expansion of multi-word strings.
+          tag_args=()
+          if [ -n "$NPM_TAG" ]; then tag_args=(--tag "$NPM_TAG"); fi
+          npm publish --provenance --access public "${tag_args[@]}"
+
+  # ─── npm wrapper: dpe-dev ───────────────────────────────────────────────
+  publish-npm-wrapper-dpe-dev:
+    name: publish wrapper dpe-dev
+    needs: [publish-npm-platform-dpe-dev, version]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Bump version + publish (idempotent)
+        working-directory: dpe-dev
+        shell: bash
+        env:
+          SEMVER:  ${{ needs.version.outputs.semver }}
+          NPM_TAG: ${{ needs.version.outputs.npm_tag }}
+        run: |
+          pkg=$(jq -r .name package.json)
+          if npm view "$pkg@$SEMVER" version >/dev/null 2>&1; then
+            echo "$pkg@$SEMVER already on npm — skip"; exit 0
+          fi
+          jq --arg v "$SEMVER" '
+            .version = $v
+            | .optionalDependencies |= with_entries(.value = $v)
+          ' package.json > package.json.tmp && mv package.json.tmp package.json
+          # Use a bash array so each element is properly quoted: shellcheck
+          # SC2086 flags unquoted $var expansion of multi-word strings.
+          tag_args=()
+          if [ -n "$NPM_TAG" ]; then tag_args=(--tag "$NPM_TAG"); fi
+          npm publish --provenance --access public "${tag_args[@]}"
+
+  # ─── GHCR: dpe-base ─────────────────────────────────────────────────────
+  ghcr-base:
+    name: ghcr dpe-base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/dpe-base
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          flavor: latest=auto
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: base
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CARGO_JOBS=4
+          cache-from: type=gha,scope=base
+          cache-to:   type=gha,scope=base,mode=max
+
+  # ─── GHCR: dpe-dev ──────────────────────────────────────────────────────
+  ghcr-dev:
+    name: ghcr dpe-dev
+    needs: ghcr-base
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/dpe-dev
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          flavor: latest=auto
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: dev
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags:   ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CARGO_JOBS=4
+          cache-from: |
+            type=gha,scope=base
+            type=gha,scope=dev
+          cache-to:   type=gha,scope=dev,mode=max
+
+  # ─── catalog: build per-tool tarballs + rewrite catalog.json ────────────
+  # Computes once, downstream jobs (npm sub-package publish + github-release)
+  # consume the same artifact. This keeps catalog rewrites in a single place
+  # and ensures the catalog bundled in npm packages matches the one attached
+  # to the GitHub Release.
+  catalog:
+    name: build catalog + tarballs
+    needs: [build, version]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts/
+
+      - name: Build tarballs + rewrite catalog.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ needs.version.outputs.semver }}"
+          tag="v$ver"
+          out=release-staged
+          mkdir -p "$out"
+
+          # platform tag mapping: GH artifact name (npm style) -> runner style
+          declare -A runner_tag=(
+            [linux-x64]=linux-amd64
+            [linux-arm64]=linux-arm64
+            [darwin-x64]=darwin-amd64
+            [darwin-arm64]=darwin-arm64
+            [win32-x64]=windows-amd64
+          )
+
+          tools="scan-fs read-file-stream write-file-stream write-file-stream-hashed normalize gate checkpoint"
+
+          # Restore +x bits — actions/upload-artifact@v4+ packs as ZIP which
+          # strips Unix exec bits. Without this, every tool binary in the
+          # tarball would be mode 0644 → "permission denied" at runtime on
+          # Linux/macOS. Windows is unaffected (no exec-bit concept).
+          for npm_p in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            src="artifacts/build-$npm_p"
+            chmod +x "$src/bin/dpe" "$src/bin/dpe-dev"
+            for t in $tools; do
+              chmod +x "$src/tools/$t/target/release/$t"
+            done
+          done
+
+          # Deterministic tar flags so re-running the workflow on the same
+          # tag produces byte-identical tarballs (and identical sha256s):
+          #   --sort=name        — stable file order
+          #   --mtime='@1700000000' — fixed epoch (2023-11-14, arbitrary anchor)
+          #   --owner=0 --group=0 --numeric-owner — strip uid/gid metadata
+          #   --use-compress-program='gzip -n' — disable gzip's own timestamp
+          #     (otherwise the gzip envelope changes every run even with
+          #     identical tar payload)
+          TARDET=(--sort=name --mtime='@1700000000'
+                  --owner=0 --group=0 --numeric-owner
+                  --use-compress-program='gzip -n')
+
+          for npm_p in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+            r_p="${runner_tag[$npm_p]}"
+            ext=""
+            if [ "$npm_p" = "win32-x64" ]; then ext=".exe"; fi
+            src="artifacts/build-$npm_p"
+
+            tar "${TARDET[@]}" -cf "$out/dpe-$ver-$r_p.tar.gz"     -C "$src/bin" "dpe$ext"
+            tar "${TARDET[@]}" -cf "$out/dpe-dev-$ver-$r_p.tar.gz" -C "$src/bin" "dpe-dev$ext"
+
+            # per-tool tarballs (binary at target/release/<n> + meta.json + spec.yaml + README)
+            for t in $tools; do
+              tar "${TARDET[@]}" -cf "$out/$t-$ver-$r_p.tar.gz" -C "$src/tools/$t" .
+            done
+          done
+
+          # Rewrite catalog.json with download URLs + platform sha256s.
+          # The url_template uses {version}/{os}/{arch} placeholders — the
+          # runner's install command substitutes these at install time.
+          base="https://github.com/combycode/dpe/releases/download/$tag"
+          cp catalog.json catalog.in.json
+          for t in $tools; do
+            url="$base/$t-{version}-{os}-{arch}.tar.gz"
+            jq --arg t "$t" --arg u "$url" --arg v "$ver" \
+              '.tools[$t].binary.url_template = $u | .tools[$t].version = $v' \
+              catalog.in.json > catalog.tmp.json && mv catalog.tmp.json catalog.in.json
+            for npm_p in linux-x64 linux-arm64 darwin-x64 darwin-arm64 win32-x64; do
+              r_p="${runner_tag[$npm_p]}"
+              sha=$(sha256sum "$out/$t-$ver-$r_p.tar.gz" | awk '{print $1}')
+              jq --arg t "$t" --arg p "$r_p" --arg s "$sha" \
+                '.tools[$t].binary.sha256[$p] = $s' \
+                catalog.in.json > catalog.tmp.json && mv catalog.tmp.json catalog.in.json
+            done
+          done
+          mv catalog.in.json "$out/catalog.json"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-staged
+          path: release-staged/
+          retention-days: 7
+
+  # ─── GitHub Release: attach prepared tarballs + catalog ─────────────────
+  github-release:
+    name: github release
+    needs: [catalog, version]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-staged
+          path: release-staged/
+
+      - name: Clean up orphan draft releases for this tag
+        env:
+          TAG: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # softprops/action-gh-release v3 fails to finalize when an orphan
+          # DRAFT release for the same tag exists from a prior failed run.
+          # `gh release delete <tag>` can't disambiguate multiple drafts on
+          # the same tag, so we list via the raw REST API (which exposes
+          # numeric id) and delete by id. Field names match the GitHub REST
+          # docs (https://docs.github.com/en/rest/releases/releases):
+          #   GET    /repos/{owner}/{repo}/releases  -> [{id,tag_name,draft,...}]
+          #   DELETE /repos/{owner}/{repo}/releases/{id}
+          gh api "/repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$TAG\" and .draft == true) | .id" \
+            | while read -r id; do
+                [ -n "$id" ] || continue
+                echo "deleting orphan draft release id=$id"
+                gh api -X DELETE "/repos/$GITHUB_REPOSITORY/releases/$id" || true
+              done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-staged/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true

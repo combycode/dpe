@@ -1,0 +1,58 @@
+# Docker build context exclusions (must live at build-context root).
+# Without this the context transfer is ~13 GB; with it, ~50 MB.
+
+# Rust build artefacts
+**/target
+
+# Node / Bun
+**/node_modules
+**/bun.lock
+**/package-lock.json
+
+# Python
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.venv
+**/venv
+**/*.egg-info
+**/.mypy_cache
+**/.ruff_cache
+
+# IDE / OS
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Git metadata — huge in some repos
+**/.git
+**/.github
+
+# Pipeline runtime state (not source)
+**/sessions
+**/runs
+test-pipeline/pipelines/*/sessions
+test-pipeline/pipelines/*/temp
+test-pipeline/runs
+
+# Local dev artefacts
+*.log
+tmp
+temp
+out
+logs
+
+# Docker's own files (avoid context-inside-context)
+docker/test/out
+
+# Docs / MOCKS aren't needed in the image
+docs
+MOCKS
+_prototypes
+research-insights.md
+pipeline-architecture.md
+
+# Experiments folder — not needed in distribution image
+tool-experiments/logs
+tool-experiments/tools

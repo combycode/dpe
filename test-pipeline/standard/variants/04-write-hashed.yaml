@@ -1,0 +1,17 @@
+pipeline: standard
+variant: 04-write-hashed
+# Exercises: write-file-stream-hashed — per-file content dedup.
+# Same input stream twice; second batch should be skipped by hash.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  sink:
+    tool: write-file-stream-hashed
+    settings:
+      default_file: "$output/deduped.ndjson"
+      format:       ndjson
+      hash:         xxhash
+    input: read

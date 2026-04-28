@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.91"
+  BUN_VERSION: "1.2.20"
+  PYTHON_VERSION: "3.13"
+  NODE_VERSION: "24"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─── Lint everything (one job, ubuntu) ──────────────────────────────────
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python lint deps
+        run: pip install ruff mypy
+
+      - name: Install TS framework deps (for tsc)
+        working-directory: frameworks/ts
+        run: bun install
+
+      # actionlint + shellcheck pre-install so scripts/lint.sh doesn't need
+      # to download them in CI. shellcheck must be on PATH BEFORE actionlint
+      # runs, otherwise actionlint silently skips shell-script linting and
+      # CI passes while real warnings (SC2086 word-splitting etc.) hide.
+      - name: Install shellcheck (apt, fast)
+        run: sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Install actionlint
+        run: |
+          mkdir -p scripts/.bin
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) \
+            1.7.12 scripts/.bin
+
+      - name: Run lint suite
+        run: bash scripts/lint.sh
+
+  # ─── cargo test on every OS ─────────────────────────────────────────────
+  test:
+    name: test (${{ matrix.os }})
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --all-features
+
+  # ─── Bun + Python tests (linux only — non-cargo suites) ─────────────────
+  test-non-cargo:
+    name: test-non-cargo
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python framework with dev extras
+        run: pip install "frameworks/python[dev]"
+
+      - name: bun test (frameworks/ts)
+        working-directory: frameworks/ts
+        run: |
+          bun install
+          bun test
+
+      - name: pytest (frameworks/python)
+        working-directory: frameworks/python
+        run: python -m pytest -q

@@ -1,0 +1,41 @@
+[package]
+name = "combycode-dpe"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "DPE framework for building streaming pipeline tools in Rust"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/combycode/dpe-framework-rust"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake2 = { version = "0.10", features = ["std"] }
+ctrlc = "3"
+# Used by atomic::write_atomic_async and polling::poll_until_async -- tools
+# that need a tokio runtime opt in via tokio = "1" in their own Cargo.toml.
+tokio = { version = "1", features = ["fs", "time", "io-util"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+jsonschema = { version = "0.46", default-features = false }
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "time", "io-util", "macros", "rt"] }
+
+
+# NOTE: lints are inlined here, NOT inherited from the workspace.
+# Reason: this crate is shipped as embedded source (extracted by dpe-dev at
+# scaffold time) -- the extracted copy lives outside any workspace, so
+# `[lints] workspace = true` would fail with "failed to find a workspace
+# root". Keep these in sync with the workspace `[workspace.lints]` block.
+[lints.rust]
+unused           = { level = "deny", priority = -1 }
+dead_code        = "deny"
+unreachable_code = "deny"
+unreachable_pub  = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all          = { level = "deny", priority = -1 }
+correctness  = { level = "deny", priority = -1 }
+suspicious   = { level = "deny", priority = -1 }

@@ -1,0 +1,31 @@
+[package]
+name = "combycode-dpe-tool-normalize"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "DPE tool -- universal row normalizer: dict replace, type coercion, key rename, shape transforms, profile-based rulebook dispatch"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/combycode/dpe-tool-normalize"
+
+[dependencies]
+combycode-dpe = { path = "../../frameworks/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde-saphyr = "0.0.25"
+regex = "1"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+csv = "1"
+thiserror = "2"
+anyhow = "1"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "normalize"
+path = "src/main.rs"
+
+
+[lints]
+workspace = true

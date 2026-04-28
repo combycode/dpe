@@ -1,0 +1,10 @@
+{
+  "name": "{{tool_name_kebab}}",
+  "version": "0.1.0",
+  "description": "{{description}}",
+  "runtime": "bun",
+  "entry": "src/main.ts",
+  "run": "bun src/main.ts",
+  "build": "bun install",
+  "test": "bun test"
+}

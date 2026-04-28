@@ -1,0 +1,21 @@
+[package]
+name = "combycode-dpe-tool-readfile"
+version = "2.0.0-rc1"
+edition = "2021"
+description = "DPE tool -- stream rows from text files (NDJSON / lines / CSV)"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/combycode/dpe-tool-readfile"
+
+[dependencies]
+combycode-dpe = { path = "../../frameworks/rust" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+csv = "1"
+
+[[bin]]
+name = "read-file-stream"
+path = "src/main.rs"
+
+
+[lints]
+workspace = true

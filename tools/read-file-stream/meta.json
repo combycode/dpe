@@ -1,0 +1,10 @@
+{
+  "name": "read-file-stream",
+  "version": "0.1.0",
+  "description": "Streams rows from a file (NDJSON / lines / CSV). One stdin envelope per file; one stdout envelope per row.",
+  "runtime": "rust",
+  "entry": "target/release/read-file-stream",
+  "run": "cargo run --release --",
+  "build": "cargo build --release",
+  "test": "cargo test"
+}

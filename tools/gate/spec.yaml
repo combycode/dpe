@@ -1,0 +1,41 @@
+name: "gate"
+runtime: "rust"
+description: "Stateful pass-through that publishes progress to disk so downstream tools (and the monitor TUI) can coordinate."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    name:
+      type: string
+      required: true
+      description: "Gate name; the state file is written to <gates_dir>/<name>.json"
+    expect_count:
+      oneOf:
+        - { type: integer, minimum: 1 }
+        - { type: "null" }
+      default: null
+      description: "If set, predicate flips to true once this many envelopes have passed; null = predicate flips on stdin EOF only"
+    gates_dir:
+      type: string
+      default: "$session/gates"
+      description: "Directory where the JSON state file is written"
+    flush_every_rows:
+      type: integer
+      minimum: 1
+      default: 100
+      description: "Atomic write to the state file every N envelopes"
+    flush_every_ms:
+      type: integer
+      minimum: 1
+      default: 500
+      description: "Atomic write at least every N milliseconds"
+
+input:
+  description: "Any envelope. Pass-through, no transformation."
+
+output:
+  description: "Same as input. The gate's state is published as a side-effect file at <gates_dir>/<name>.json."
+
+# Gate state file shape:
+#   { "name": "...", "count": N, "last_id": "...", "predicate_met": bool, "updated_at": <epoch_ms> }

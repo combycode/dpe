@@ -1,0 +1,45 @@
+name: "write-file-stream-hashed"
+runtime: "rust"
+description: "Same as write-file-stream plus per-file content deduplication for idempotent reruns."
+
+settings:
+  type: object
+  additionalProperties: false
+  properties:
+    default_file:
+      type: string
+      required: true
+    format:
+      type: string
+      enum: ["ndjson", "lines", "csv"]
+      default: "ndjson"
+    hash:
+      type: string
+      enum: ["xxhash", "blake2b"]
+      default: "blake2b"
+      description: "Hash algorithm for the dedup index"
+    index_dir:
+      type: string
+      required: true
+      description: "Where the per-file hash index is persisted (typically `$storage/dedup`)"
+    max_open:
+      type: integer
+      minimum: 1
+      default: 32
+    idle_close_ms:
+      type: integer
+      minimum: 0
+      default: 30000
+    flush_every:
+      type: integer
+      minimum: 1
+      default: 1000
+
+input:
+  description: "Same shape as write-file-stream."
+  properties:
+    file: { type: string }
+    row:  { description: "Payload to write" }
+
+output:
+  description: "Pass-through. Duplicates (same content + same target file as in the index) are dropped silently."

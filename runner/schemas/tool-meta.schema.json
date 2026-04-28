@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://combycode.io/schemas/dpe/tool-meta.schema.json",
+  "title": "DPE Tool meta.json",
+  "description": "Schema for every tool's meta.json — runner uses this to resolve and invoke the tool.",
+  "type": "object",
+  "required": ["name", "runtime"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Tool name; referenced from pipeline stages."
+    },
+    "version": {
+      "type": "string",
+      "description": "Semver string. Recorded in stages.json for traceability."
+    },
+    "description": {
+      "type": "string"
+    },
+    "runtime": {
+      "type": "string",
+      "enum": ["rust", "python", "bun"],
+      "description": "How the runner invokes this tool."
+    },
+    "entry": {
+      "type": "string",
+      "description": "Relative path (from tool dir) to the built executable. Preferred — runner tries this first."
+    },
+    "run": {
+      "type": "string",
+      "description": "Fallback command for dev mode (e.g. 'bun src/main.ts'). Runner uses this when entry is missing."
+    },
+    "build": {
+      "type": "string",
+      "description": "Command used to produce the entry binary. Documentation/CI only — runner does not build."
+    },
+    "test": {
+      "type": "string",
+      "description": "Command to run the tool's own tests. Documentation/CI only."
+    },
+    "settings_schema": {
+      "type": "string",
+      "description": "Optional relative path to a JSON Schema file describing this tool's settings. When present, `check` validates pipeline-provided settings against it."
+    }
+  }
+}

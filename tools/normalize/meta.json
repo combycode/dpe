@@ -1,0 +1,10 @@
+{
+  "name": "normalize",
+  "version": "0.1.0",
+  "description": "Universal row normalizer. Applies rulebook of transforms (dict replace, parse_number/date, rename/whitelist, to_object, compute, require) with polymorphic dispatch on value shape. Profiles dispatch different rulebooks per envelope.",
+  "runtime": "rust",
+  "entry": "target/release/normalize",
+  "run": "cargo run --release --",
+  "build": "cargo build --release",
+  "test": "cargo test"
+}

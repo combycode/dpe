@@ -1,0 +1,8 @@
+{
+  "name": "scan-fs",
+  "version": "0.1.0",
+  "description": "Filesystem scanner — full + diff modes, files/dirs/both, glob include/exclude, optional content hash.",
+  "runtime": "rust",
+  "entry": "target/release/scan-fs",
+  "run": "cargo run --release --"
+}
