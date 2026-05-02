@@ -12,7 +12,7 @@
       "description": "Filesystem scanner -- emits file / dir envelopes with optional hashing",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "scan-fs",
         "url_template": "",
@@ -23,7 +23,7 @@
       "description": "Stream envelopes from NDJSON / CSV / lines files",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "read-file-stream",
         "url_template": "",
@@ -34,7 +34,7 @@
       "description": "Append envelopes to files with LRU handle pool",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "write-file-stream",
         "url_template": "",
@@ -45,7 +45,7 @@
       "description": "Write-file with per-file content hash deduplication",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "write-file-stream-hashed",
         "url_template": "",
@@ -56,7 +56,7 @@
       "description": "Row-level normaliser (dict / parse / rename / compute / template / require / to_object; profile dispatch)",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "normalize",
         "url_template": "",
@@ -67,7 +67,7 @@
       "description": "Stateful pass-through publishing progress; pair with checkpoint",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "gate",
         "url_template": "",
@@ -78,7 +78,7 @@
       "description": "Spool stdin until referenced gate(s) report done",
       "runtime": "rust",
       "tier": "standard",
-      "version": "2.0.0-rc1",
+      "version": "2.0.0",
       "binary": {
         "name": "checkpoint",
         "url_template": "",

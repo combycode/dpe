@@ -147,11 +147,13 @@ fn load_variant_file(variants_dir: &Path, variant_name: &str) -> Result<VariantF
         if path.exists() {
             let raw = std::fs::read_to_string(&path)
                 .map_err(|e| PipelineError::Read(path.clone(), e.to_string()))?;
+            // Tolerate UTF-8 BOM in user-authored variant files.
+            let trimmed = crate::bom::strip_bom(&raw);
             let parsed: VariantFile = if ext == "json" {
-                serde_json::from_str(&raw)
+                serde_json::from_str(trimmed)
                     .map_err(|e| PipelineError::Parse(path.clone(), e.to_string()))?
             } else {
-                serde_saphyr::from_str_with_options(&raw, strict_yaml_opts())
+                serde_saphyr::from_str_with_options(trimmed, strict_yaml_opts())
                     .map_err(|e| PipelineError::Parse(path.clone(), e.to_string()))?
             };
             return Ok(parsed);

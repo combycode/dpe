@@ -109,8 +109,12 @@ impl<P: SessionProxy> App<P> {
                 };
                 self.status.stages = j.stages.iter().map(|(sid, c)| StageStatus {
                     sid: sid.clone(), tool: String::new(),
-                    state: self.status.state,
-                    rows: c.rows_out, errors: c.errors, replicas: 1,
+                    state: c.state,
+                    rows_in:  c.rows_in,
+                    rows_out: c.rows_out,
+                    meta:     c.meta,
+                    errors:   c.errors,
+                    replicas: 1,
                 }).collect();
                 self.progress.rows_total   = j.totals.envelopes_observed;
                 self.progress.errors_total = j.totals.errors;
@@ -270,14 +274,16 @@ fn fmt_state(s: PipelineState) -> &'static str {
 }
 
 fn draw_stages<P: SessionProxy>(f: &mut Frame<'_>, area: Rect, app: &App<P>) {
-    let header = Row::new(["stage", "tool", "state", "rows", "errors", "replicas"])
+    let header = Row::new(["stage", "tool", "state", "in", "out", "meta", "errors", "replicas"])
         .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     let rows: Vec<Row<'_>> = app.status.stages.iter().map(|s| {
         Row::new([
             Cell::from(s.sid.clone()),
             Cell::from(s.tool.clone()),
-            Cell::from(fmt_state(s.state)),
-            Cell::from(s.rows.to_string()),
+            Cell::from(s.state.as_str()),
+            Cell::from(s.rows_in.to_string()),
+            Cell::from(s.rows_out.to_string()),
+            Cell::from(s.meta.to_string()),
             Cell::from(s.errors.to_string())
                 .style(if s.errors > 0 {
                     Style::default().fg(Color::Red)
@@ -288,10 +294,12 @@ fn draw_stages<P: SessionProxy>(f: &mut Frame<'_>, area: Rect, app: &App<P>) {
         ])
     }).collect();
     let table = Table::new(rows, [
-        Constraint::Percentage(25),
-        Constraint::Percentage(25),
-        Constraint::Length(9),
-        Constraint::Length(8),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+        Constraint::Length(10),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Length(6),
         Constraint::Length(8),
         Constraint::Length(8),
     ])

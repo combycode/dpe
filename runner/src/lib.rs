@@ -2,6 +2,7 @@
 //!
 //! See `SPEC.md` for the full specification.
 
+pub mod bom;
 pub mod builtins;
 pub mod catalog;
 pub mod config;
@@ -20,6 +21,7 @@ pub mod replicas;
 pub mod runtime;
 pub mod session_proxy;
 pub mod spawn;
+pub mod state;
 pub mod stderr;
 pub mod tools;
 pub mod trace;

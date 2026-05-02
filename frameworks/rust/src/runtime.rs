@@ -83,6 +83,12 @@ pub fn run(tool: Tool) {
         let src = envelope.get("src").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let v = envelope.get("v").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
 
+        // Emit an `input` event BEFORE the processor runs so the runner
+        // can count rows_in for every stage that reads stdin — including
+        // pass-through tools and terminal sinks that never call
+        // ctx.output() (and therefore wouldn't otherwise emit a trace).
+        envelope::write_input(&id, &src, &mut stderr_buf);
+
         {
             let mut ctx = Context::new(
                 id.clone(), src.clone(), &mut memory, &mut queue,

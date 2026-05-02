@@ -1,6 +1,6 @@
 {
   "name": "dpe",
-  "version": "2.0.0-rc1",
+  "version": "2.0.1",
   "description": "Data Processing Engine -- high-throughput streaming pipeline runner",
   "license": "AGPL-3.0-or-later",
   "repository": {
@@ -19,11 +19,11 @@
     "node": ">=24.0.0"
   },
   "optionalDependencies": {
-    "@combycode/dpe-linux-x64":    "2.0.0-rc1",
-    "@combycode/dpe-linux-arm64":  "2.0.0-rc1",
-    "@combycode/dpe-darwin-x64":   "2.0.0-rc1",
-    "@combycode/dpe-darwin-arm64": "2.0.0-rc1",
-    "@combycode/dpe-win32-x64":    "2.0.0-rc1"
+    "@combycode/dpe-linux-x64":    "2.0.1",
+    "@combycode/dpe-linux-arm64":  "2.0.1",
+    "@combycode/dpe-darwin-x64":   "2.0.1",
+    "@combycode/dpe-darwin-arm64": "2.0.1",
+    "@combycode/dpe-win32-x64":    "2.0.1"
   },
   "publishConfig": {
     "access": "public",

@@ -78,12 +78,29 @@ pub enum PipelineState {
     Failed,
 }
 
+/// Per-stage status reported over the control socket.
+///
+/// `state` is the per-stage lifecycle (pending / running / succeeded /
+/// failed / cancelled) — distinct from the pipeline-level `PipelineState`
+/// in the parent `StatusReport`. The four counters mirror the runner's
+/// `StatsCollector`:
+///   - `rows_in`  — envelopes read from stdin (lights up for terminal sinks)
+///   - `rows_out` — data envelopes emitted to stdout (was `rows` pre-v2.0.2)
+///   - `meta`     — meta envelopes emitted via ctx.meta()
+///   - `errors`   — ctx.error() events
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StageStatus {
     pub sid: String,
     pub tool: String,
-    pub state: PipelineState,
-    pub rows: u64,
+    pub state: crate::state::StageState,
+    #[serde(default)]
+    pub rows_in: u64,
+    /// Renamed wire field from `rows` (v2.0.1) → `rows_out` (v2.0.2).
+    /// `serde(alias)` keeps deserialisation compatible with older payloads.
+    #[serde(alias = "rows")]
+    pub rows_out: u64,
+    #[serde(default)]
+    pub meta: u64,
     pub errors: u64,
     pub replicas: u32,
 }

@@ -48,6 +48,19 @@ impl Default for TraceConfig {
     }
 }
 
+impl From<&crate::config::TraceConfig> for TraceConfig {
+    fn from(c: &crate::config::TraceConfig) -> Self {
+        Self {
+            max_events_buffered:    c.max_events,
+            flush_ms:               c.effective_flush_ms(),
+            max_segment_bytes:      c.max_segment_bytes,
+            max_labels_per_record:  c.max_labels_per_record as usize,
+            max_labels_chars_total: c.max_labels_chars_total as usize,
+            channel_capacity:       c.effective_channel_capacity() as usize,
+        }
+    }
+}
+
 // ═══ Event shape ═════════════════════════════════════════════════════════
 
 /// An envelope source id: single parent (normal) or multiple (aggregate/join).

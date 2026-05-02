@@ -13,6 +13,11 @@ use crate::types::CacheMode;
 
 /// Per-run context that translates 1:1 into `DPE_*` env vars plus the
 /// `PathResolver` prefix map.
+///
+/// `temp_override` and `storage_override` (added in v2.0.1) let `dpe run`
+/// callers redirect `$temp` and `$storage` away from the pipeline dir on
+/// a per-run basis. When None, they fall back to the historical defaults
+/// (`<pipeline_dir>/temp` and `<pipeline_dir>/storage`).
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub pipeline_dir: PathBuf,
@@ -22,6 +27,10 @@ pub struct SessionContext {
     pub input: PathBuf,
     pub output: PathBuf,
     pub cache_mode: CacheMode,
+    /// Override for $temp. None ⇒ <pipeline_dir>/temp.
+    pub temp_override: Option<PathBuf>,
+    /// Override for $storage. None ⇒ <pipeline_dir>/storage.
+    pub storage_override: Option<PathBuf>,
 }
 
 impl SessionContext {
@@ -31,8 +40,14 @@ impl SessionContext {
             .join(format!("{}_{}", self.session_id, self.variant))
     }
     pub fn configs_dir(&self) -> PathBuf { self.pipeline_dir.join("configs") }
-    pub fn storage_dir(&self) -> PathBuf { self.pipeline_dir.join("storage") }
-    pub fn temp_dir(&self)    -> PathBuf { self.pipeline_dir.join("temp") }
+    pub fn storage_dir(&self) -> PathBuf {
+        self.storage_override.clone()
+            .unwrap_or_else(|| self.pipeline_dir.join("storage"))
+    }
+    pub fn temp_dir(&self) -> PathBuf {
+        self.temp_override.clone()
+            .unwrap_or_else(|| self.pipeline_dir.join("temp"))
+    }
 
     /// Assemble the full DPE_* env-var set for a given stage instance.
     /// Existing env vars from the runner process are NOT included — caller
@@ -129,12 +144,51 @@ mod tests {
             input:         PathBuf::from("/data/in"),
             output:        PathBuf::from("/data/out"),
             cache_mode:    CacheMode::Use,
+            temp_override:    None,
+            storage_override: None,
         }
     }
 
     #[test] fn session_dir_derived() {
         assert_eq!(sample_ctx().session_dir(),
             PathBuf::from("/pipes/my/sessions/20260420-153012-af01_main"));
+    }
+
+    #[test] fn temp_dir_defaults_to_pipeline_subdir() {
+        assert_eq!(sample_ctx().temp_dir(), PathBuf::from("/pipes/my/temp"));
+    }
+
+    #[test] fn storage_dir_defaults_to_pipeline_subdir() {
+        assert_eq!(sample_ctx().storage_dir(), PathBuf::from("/pipes/my/storage"));
+    }
+
+    #[test] fn temp_override_redirects_temp_dir() {
+        // Regression for v2.0.1 --temp-dir flag: when set, $temp resolves
+        // to the override and NOT to <pipeline>/temp.
+        let mut ctx = sample_ctx();
+        ctx.temp_override = Some(PathBuf::from("/scratch/run42"));
+        assert_eq!(ctx.temp_dir(), PathBuf::from("/scratch/run42"));
+        // Storage still defaults — only the explicit override moves.
+        assert_eq!(ctx.storage_dir(), PathBuf::from("/pipes/my/storage"));
+    }
+
+    #[test] fn storage_override_redirects_storage_dir() {
+        let mut ctx = sample_ctx();
+        ctx.storage_override = Some(PathBuf::from("/persist/run42"));
+        assert_eq!(ctx.storage_dir(), PathBuf::from("/persist/run42"));
+        assert_eq!(ctx.temp_dir(), PathBuf::from("/pipes/my/temp"));
+    }
+
+    #[test] fn dpe_env_vars_reflect_overrides() {
+        // Spawned tools must see the redirected paths via DPE_TEMP / DPE_STORAGE,
+        // otherwise tools resolving $temp/$storage from env disagree with
+        // PathResolver. End-to-end the override has to thread through.
+        let mut ctx = sample_ctx();
+        ctx.temp_override    = Some(PathBuf::from("/scratch/T"));
+        ctx.storage_override = Some(PathBuf::from("/scratch/S"));
+        let env = ctx.env_for_stage("stage", 0);
+        assert_eq!(env["DPE_TEMP"],    "/scratch/T");
+        assert_eq!(env["DPE_STORAGE"], "/scratch/S");
     }
 
     #[test] fn env_for_stage_includes_all_prefixes() {

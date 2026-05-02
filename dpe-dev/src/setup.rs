@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::embedded;
 
-pub(crate) fn setup(path: Option<PathBuf>, force: bool) -> Result<PathBuf> {
+pub(crate) fn setup(path: Option<PathBuf>, force: bool, config_path: &Path) -> Result<PathBuf> {
     let workspace = resolve_target(path)?;
     let abs = canonical_or_given(&workspace);
 
@@ -28,14 +28,14 @@ pub(crate) fn setup(path: Option<PathBuf>, force: bool) -> Result<PathBuf> {
     let marker = abs.join(".dpe-workspace.toml");
     if !marker.exists() {
         let contents = format!(
-            "# marker file — dpe-dev setup created this workspace\nversion = \"2.0.0\"\ncreated = \"{}\"\n",
+            "# marker file — dpe-dev setup created this workspace\nversion = \"2.0.1\"\ncreated = \"{}\"\n",
             chrono_rfc3339()
         );
         std::fs::write(&marker, contents)?;
     }
 
-    // Register in ~/.dpe/config.toml (best-effort)
-    if let Err(e) = register_in_config(&abs) {
+    // Register in resolved config (best-effort).
+    if let Err(e) = register_in_config(&abs, config_path) {
         eprintln!("[setup] WARN — config registration failed: {}", e);
     }
 
@@ -68,16 +68,14 @@ fn canonical_or_given(p: &Path) -> PathBuf {
     }
 }
 
-fn register_in_config(workspace: &Path) -> Result<()> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| anyhow!("no home dir"))?;
-    let config_path = home.join(".dpe").join("config.toml");
-
-    std::fs::create_dir_all(config_path.parent().unwrap())?;
+fn register_in_config(workspace: &Path, config_path: &Path) -> Result<()> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
     // Read existing config (or start empty)
     let mut doc: toml::Value = if config_path.exists() {
-        let raw = std::fs::read_to_string(&config_path)?;
+        let raw = std::fs::read_to_string(config_path)?;
         toml::from_str(&raw).unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
     } else {
         toml::Value::Table(toml::map::Map::new())
@@ -95,7 +93,7 @@ fn register_in_config(workspace: &Path) -> Result<()> {
 
     // Write back
     let out = toml::to_string_pretty(&doc)?;
-    std::fs::write(&config_path, out)?;
+    std::fs::write(config_path, out)?;
     eprintln!("[setup] registered workspace in {}", config_path.display());
     Ok(())
 }
@@ -116,7 +114,8 @@ mod tests {
     #[test] fn setup_creates_workspace_files() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("ws");
-        let result = setup(Some(target.clone()), false).unwrap();
+        let cfg = tmp.path().join("config.toml");
+        let result = setup(Some(target.clone()), false, &cfg).unwrap();
         assert!(result.exists());
         assert!(target.join(".claude/skills/dpe-tool/SKILL.md").exists());
         assert!(target.join("fixtures/uppercase-text.yaml").exists());
@@ -126,13 +125,28 @@ mod tests {
     #[test] fn setup_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("ws");
-        setup(Some(target.clone()), false).unwrap();
+        let cfg = tmp.path().join("config.toml");
+        setup(Some(target.clone()), false, &cfg).unwrap();
         // Second run must succeed and not clobber
         let marker = target.join(".dpe-workspace.toml");
         let before = std::fs::read_to_string(&marker).unwrap();
-        setup(Some(target.clone()), false).unwrap();
+        setup(Some(target.clone()), false, &cfg).unwrap();
         let after = std::fs::read_to_string(&marker).unwrap();
         assert_eq!(before, after, "marker should not be overwritten on second setup");
+    }
+
+    #[test] fn setup_writes_dev_workspace_to_explicit_config() {
+        // The --config override path actually receives the workspace
+        // registration — not ~/.dpe/config.toml. Regression for v2.0.0
+        // where dpe-dev had no --config and always wrote to home.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("ws");
+        let cfg = tmp.path().join("explicit-config.toml");
+        setup(Some(target.clone()), false, &cfg).unwrap();
+        assert!(cfg.exists(), "config file must be created at the override path");
+        let written = std::fs::read_to_string(&cfg).unwrap();
+        assert!(written.contains("[dev]"), "must contain [dev] table");
+        assert!(written.contains("workspace"), "must record workspace path");
     }
 
     #[test] fn resolve_target_defaults_to_home_dpe_dev_workspace() {

@@ -137,6 +137,8 @@ fn ctx_for(tmp: &std::path::Path) -> SessionContext {
         session_id: "e2e".into(),
         input: tmp.join("in"), output: tmp.join("out"),
         cache_mode: CacheMode::Use,
+        temp_override:    None,
+        storage_override: None,
     }
 }
 

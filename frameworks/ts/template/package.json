@@ -9,7 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@combycode/dpe-framework-ts": "file:{{framework_path}}"
+    "@combycode/dpe-framework-ts": "^2"
   },
   "devDependencies": {
     "@types/bun": "latest",

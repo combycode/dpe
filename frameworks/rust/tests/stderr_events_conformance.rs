@@ -80,7 +80,7 @@ fn trace_event_validates_against_schema() {
     let schema = load_schema();
     let mut buf = Vec::new();
     let labels = json!({"stage": "convert", "tool": "doc-converter"});
-    envelope::write_trace("id1", "src1", &labels, &mut buf);
+    envelope::write_trace("id1", "src1", &labels, None, &mut buf);
     let events = parse_lines(&buf);
     assert_eq!(events.len(), 1);
     assert_valid(&schema, &events[0], "trace");
@@ -92,8 +92,41 @@ fn trace_event_validates_against_schema() {
 fn trace_event_with_empty_labels_validates() {
     let schema = load_schema();
     let mut buf = Vec::new();
-    envelope::write_trace("id1", "src1", &json!({}), &mut buf);
+    envelope::write_trace("id1", "src1", &json!({}), None, &mut buf);
     assert_valid(&schema, &parse_lines(&buf)[0], "trace empty labels");
+}
+
+#[test]
+fn input_event_validates_against_schema() {
+    let schema = load_schema();
+    let mut buf = Vec::new();
+    envelope::write_input("env-id", "upstream-id", &mut buf);
+    let events = parse_lines(&buf);
+    assert_eq!(events.len(), 1);
+    assert_valid(&schema, &events[0], "input");
+    assert_eq!(events[0]["type"], "input");
+    assert_eq!(events[0]["id"],   "env-id");
+    assert_eq!(events[0]["src"],  "upstream-id");
+}
+
+#[test]
+fn meta_channel_trace_validates_against_schema() {
+    let schema = load_schema();
+    let mut buf = Vec::new();
+    envelope::write_trace("id1", "src1", &json!({}), Some("meta"), &mut buf);
+    let events = parse_lines(&buf);
+    assert_valid(&schema, &events[0], "meta-channel trace");
+    assert_eq!(events[0]["channel"], "meta");
+}
+
+#[test]
+fn data_channel_trace_validates_against_schema() {
+    let schema = load_schema();
+    let mut buf = Vec::new();
+    envelope::write_trace("id1", "src1", &json!({"k":"v"}), Some("data"), &mut buf);
+    let events = parse_lines(&buf);
+    assert_valid(&schema, &events[0], "data-channel trace");
+    assert_eq!(events[0]["channel"], "data");
 }
 
 #[test]

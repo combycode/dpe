@@ -50,13 +50,14 @@ class Context:
     def output(self, v, *, id: str | None = None, src: str | None = None):
         """Emit data record to stdout.
 
-        Flushes accumulated trace labels as a merged trace event first,
-        then writes the envelope, then clears the label bag.
+        Flushes accumulated trace labels as a merged trace event first
+        (channel="data" → counts as rows_out at the runner), then writes
+        the envelope, then clears the label bag.
         """
         out_id = id if id is not None else self.id
         out_src = src if src is not None else self.src
         # Emit trace even with empty labels — the chain row itself is the value.
-        write_trace(out_id, out_src, self._labels)
+        write_trace(out_id, out_src, self._labels, channel="data")
         self._labels = {}
         write_data(v, out_id, out_src)
 
@@ -82,7 +83,13 @@ class Context:
         self._runtime.drain_queue()
 
     def meta(self, v: dict):
-        """Emit metadata record to stdout."""
+        """Emit metadata record to stdout.
+
+        Also emits a {type:"trace", channel:"meta"} stderr event so the
+        runner can increment its per-stage `meta` counter. Inherits
+        ctx id/src.
+        """
+        write_trace(self.id, self.src, {}, channel="meta")
         write_meta(v)
 
     def log(self, msg: str, *, level: str = "info", **extra):

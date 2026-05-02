@@ -112,6 +112,27 @@ pub async fn run_variant(
     input: InputSource,
     output: OutputSink,
 ) -> Result<DagReport, DagError> {
+    run_variant_with_stats(variant, pipeline_dir, session, config, input, output, None, None).await
+}
+
+/// Same as [`run_variant`] but lets the caller own the StatsCollector +
+/// StateCollector so they can read live snapshots while the run is in
+/// progress (used by `dpe run --stats <ms>` to emit periodic per-stage
+/// counter + state dumps).
+///
+/// When either external collector is `None`, an internal one is created
+/// — keeps the run-loop wiring uniform regardless of caller mode.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_variant_with_stats(
+    variant: &ResolvedVariant,
+    pipeline_dir: &Path,
+    session: &SessionContext,
+    config: &RunnerConfig,
+    input: InputSource,
+    output: OutputSink,
+    external_stats: Option<crate::stderr::StatsCollector>,
+    external_state: Option<crate::state::StateCollector>,
+) -> Result<DagReport, DagError> {
     let started_at = std::time::Instant::now();
 
     // 1. Build a static-prefix resolver from the SessionContext (everything
@@ -148,11 +169,13 @@ pub async fn run_variant(
     write_stages_json(variant, &session_dir)
         .map_err(|e| DagError::Io { stage: "<session>".into(), reason: e.to_string() })?;
     let (tracer, tracer_handle) = crate::trace::Tracer::spawn(
-        &session_dir, crate::trace::TraceConfig::default()
+        &session_dir, crate::trace::TraceConfig::from(&config.trace),
     ).await.map_err(|e| DagError::Io { stage: "<trace>".into(), reason: e.to_string() })?;
-    let stats_coll = crate::stderr::StatsCollector::new();
-    let (log_sink, log_task) = crate::stderr::LogSink::spawn(session_dir.clone()).await
-        .map_err(|e| DagError::Io { stage: "<logsink>".into(), reason: e.to_string() })?;
+    let stats_coll = external_stats.unwrap_or_default();
+    let state_coll = external_state.unwrap_or_default();
+    let (log_sink, log_task) = crate::stderr::LogSink::spawn_with(
+        session_dir.clone(), &config.log_sink,
+    ).await.map_err(|e| DagError::Io { stage: "<logsink>".into(), reason: e.to_string() })?;
 
     // Start the journal writer (periodic + final flush).
     let started_at_ms = crate::journal::now_ms();
@@ -163,6 +186,7 @@ pub async fn run_variant(
         session.session_id.clone(),
         started_at_ms,
         stats_coll.clone(),
+        state_coll.clone(),
         std::time::Duration::from_millis(config.runtime.effective_journal_flush_ms()),
     );
 
@@ -184,14 +208,16 @@ pub async fn run_variant(
         started_at: started_at_ms,
         stages:   variant.stages.iter().map(|(sid, st)| crate::control::StageStatus {
             sid: sid.clone(), tool: st.tool.clone(),
-            state: crate::control::PipelineState::Running,
-            rows: 0, errors: 0, replicas: st.replicas,
+            state: crate::state::StageState::Pending,
+            rows_in: 0, rows_out: 0, meta: 0, errors: 0,
+            replicas: st.replicas,
         }).collect(),
     }).await;
 
     // Spawn a periodic status refresher so the CLI always sees fresh counts.
     let status_pub = spawn_status_publisher(
-        control_handle.clone(), stats_coll.clone(), session_dir.clone(),
+        control_handle.clone(), stats_coll.clone(), state_coll.clone(),
+        session_dir.clone(),
         variant.pipeline.clone(), variant.variant.clone(), session.session_id.clone(),
         started_at_ms, variant.stages.clone(),
     );
@@ -199,17 +225,33 @@ pub async fn run_variant(
     // 5. Hand off to executor — it owns spawn / wire / drive / shutdown.
     let exec_result = executor::execute(
         &plan, pipeline_dir, session, config, input, output,
-        tracer.clone(), stats_coll.clone(), log_sink.clone(), &logs_dir,
+        tracer.clone(), stats_coll.clone(), state_coll.clone(),
+        log_sink.clone(), &logs_dir,
     ).await?;
 
     // 6. Close the tracer — its writer task drains the remaining buffer.
     tracer.shutdown();
     let _ = tracer_handle.await;
 
-    // 7. Finalize the journal. "Partial" if any stage failed OR any
-    //    stage emitted an error event (ctx.error → logs/<stage>_errors.log).
+    // 7. Reconcile lingering Pending/Running stages now that exec has
+    //    returned. Any stage that didn't reach a terminal state through
+    //    its own exit path collapses to Succeeded (clean overall run) or
+    //    Failed (if the run as a whole had errors / non-zero exits).
+    //    This also catches stages that genuinely had zero throughput —
+    //    no input ever flowed, but the pipeline still ended cleanly.
     let has_errors = stats_coll.snapshot().values().any(|c| c.errors > 0);
-    let journal_state = if exec_result.failed > 0 || has_errors {
+    let pipeline_failed = exec_result.failed > 0 || has_errors;
+    let reconcile_state = if pipeline_failed {
+        crate::state::StageState::Failed
+    } else {
+        crate::state::StageState::Succeeded
+    };
+    let all_sids: Vec<String> = variant.stages.keys().cloned().collect();
+    state_coll.mark_all_non_terminal(&all_sids, reconcile_state);
+
+    // Finalize the journal. "Partial" if any stage failed OR any stage
+    // emitted an error event (ctx.error → logs/<stage>_errors.log).
+    let journal_state = if pipeline_failed {
         crate::journal::JournalState::Partial
     } else {
         crate::journal::JournalState::Succeeded
@@ -251,6 +293,7 @@ pub async fn run_variant(
 fn spawn_status_publisher(
     handle: crate::control::ControlHandle,
     stats: crate::stderr::StatsCollector,
+    state: crate::state::StateCollector,
     session_dir: std::path::PathBuf,
     pipeline: String,
     variant: String,
@@ -263,15 +306,26 @@ fn spawn_status_publisher(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            let snap = stats.snapshot();
+            let stats_snap = stats.snapshot();
+            let state_snap = state.snapshot();
             let stage_statuses: Vec<_> = stages.iter().map(|(sid, st)| {
-                let c = snap.get(sid).cloned().unwrap_or_default();
+                let c = stats_snap.get(sid).cloned().unwrap_or_default();
+                // Per-stage state: explicit (terminal) wins; otherwise
+                // derive Pending/Running from rows_in.
+                let derived = match state_snap.get(sid).copied() {
+                    Some(s) => s,
+                    None if c.rows_in > 0 || c.rows_out > 0 || c.errors > 0
+                        => crate::state::StageState::Running,
+                    None => crate::state::StageState::Pending,
+                };
                 crate::control::StageStatus {
                     sid: sid.clone(),
                     tool: st.tool.clone(),
-                    state: crate::control::PipelineState::Running,
-                    rows: c.rows_out,
-                    errors: c.errors,
+                    state: derived,
+                    rows_in:  c.rows_in,
+                    rows_out: c.rows_out,
+                    meta:     c.meta,
+                    errors:   c.errors,
                     replicas: st.replicas,
                 }
             }).collect();
@@ -284,7 +338,7 @@ fn spawn_status_publisher(
                 stages:   stage_statuses,
             };
             handle.set_status(status).await;
-            handle.set_progress(build_progress(&session_dir, &snap)).await;
+            handle.set_progress(build_progress(&session_dir, &stats_snap)).await;
         }
     })
 }

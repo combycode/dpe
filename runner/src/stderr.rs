@@ -2,20 +2,25 @@
 //! fan to 4 sinks.
 //!
 //! Tools emit JSON lines on stderr; each has a `type` field:
-//!   {"type":"trace", "id":"...", "src":"...", "labels":{...}}   ← framework-emitted
+//!   {"type":"input", "id":"...", "src":"..."}                            ← framework-emitted (per envelope read)
+//!   {"type":"trace", "id":"...", "src":"...", "labels":{...}, "channel":"data"|"meta"} ← framework-emitted
 //!   {"type":"error", "error":"...", "input":..., "id":..., "src":...}
 //!   {"type":"log",   "level":"info|warn|error", "msg":"...", ...extra}
 //!   {"type":"stats", ...}
 //! Anything that doesn't parse → treated as {"type":"log","level":"info","msg": raw}.
 //!
 //! Runner sinks:
+//!   - input → StatsCollector.rows_in (no other side-effect; tracer is NOT touched)
 //!   - trace → Tracer (appends to $session/trace/trace.N.ndjson with {t,sid,id,src,labels})
+//!     AND StatsCollector counter — channel="data" or unset → rows_out
+//!     (back-compat); channel="meta" → meta
 //!   - error → append to $session/logs/<stage>_errors.log as NDJSON
 //!   - log   → print to runner's stderr as `[stage] level: msg` (console logger)
-//!   - stats → increment in-memory counters in `StatsCollector`
+//!   - stats → increment in-memory counters in `StatsCollector` (custom — TODO)
 //!
-//! Per-stage counters (rows_out, errors) are tracked by counting `trace`
-//! and `error` events from that stage.
+//! Per-stage counters (rows_in, rows_out, meta, errors) are derived purely
+//! from these stderr events. Meta-channel traces are NOT forwarded to
+//! Tracer (the trace file remains the data-output chain only).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -35,9 +40,24 @@ use crate::trace::{Src, TraceEvent, Tracer};
 
 /// Per-stage in-memory counters, shared across all instance readers of a
 /// stage. Used by the journal writer to produce `journal.json`.
+///
+/// Source of each counter:
+///   - `rows_in`  — `{type:"input"}` events emitted by the framework per
+///     envelope read from stdin. Lights up for ALL stages that read input,
+///     including terminal sinks that never call ctx.output(). Builtins
+///     (route/filter/dedup/group_by) wire in directly.
+///   - `rows_out` — `{type:"trace", channel:"data"}` events emitted by
+///     ctx.output(). Missing channel field treated as "data" (back-compat).
+///   - `meta`     — `{type:"trace", channel:"meta"}` events emitted by
+///     ctx.meta().
+///   - `errors`   — `{type:"error", ...}` events emitted by ctx.error().
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct StageCounters {
+    #[serde(default)]
+    pub rows_in: u64,
     pub rows_out: u64,
+    #[serde(default)]
+    pub meta: u64,
     pub errors: u64,
 }
 
@@ -49,9 +69,19 @@ pub struct StatsCollector {
 impl StatsCollector {
     pub fn new() -> Self { Self::default() }
 
+    pub fn inc_rows_in(&self, stage: &str) {
+        let mut m = self.inner.lock().unwrap();
+        m.entry(stage.to_string()).or_default().rows_in += 1;
+    }
+
     pub fn inc_rows_out(&self, stage: &str) {
         let mut m = self.inner.lock().unwrap();
         m.entry(stage.to_string()).or_default().rows_out += 1;
+    }
+
+    pub fn inc_meta(&self, stage: &str) {
+        let mut m = self.inner.lock().unwrap();
+        m.entry(stage.to_string()).or_default().meta += 1;
     }
 
     pub fn inc_errors(&self, stage: &str) {
@@ -86,6 +116,15 @@ pub enum StderrEvent {
         #[serde(default)]
         src: Option<String>,
     },
+    /// Framework-emitted before each `process_input` call. Used to count
+    /// `rows_in` for every stage that reads stdin — including pass-through
+    /// tools and terminal sinks. Not forwarded to Tracer.
+    Input {
+        #[serde(default)]
+        id:  Option<String>,
+        #[serde(default)]
+        src: Option<String>,
+    },
     Trace {
         #[serde(default)]
         id: Option<String>,
@@ -93,6 +132,10 @@ pub enum StderrEvent {
         src: Option<String>,
         #[serde(default)]
         labels: Option<BTreeMap<String, Value>>,
+        /// "data" (or unset → treated as data for back-compat) → rows_out,
+        /// "meta" → meta. Other values are ignored for counter purposes.
+        #[serde(default)]
+        channel: Option<String>,
     },
     Stats {
         #[serde(default)]
@@ -147,25 +190,70 @@ pub fn spawn_reader(
 /// A handle the classifier uses to append structured log events to
 /// `$session/log.ndjson`. Backed by an mpsc channel + single writer task.
 /// Use `LogSink::spawn` at startup; drop all clones to flush and close.
+///
+/// The writer task uses a `BufWriter` for amortised disk writes and a
+/// periodic flush ticker so live tailing (`dpe log --follow`, the editor's
+/// Logs tab) sees lines without waiting for the buffer to fill. Both the
+/// flush interval and the channel capacity are runtime-configurable —
+/// see [`crate::config::LogSinkConfig`].
 #[derive(Debug, Clone)]
 pub struct LogSink {
     tx: tokio::sync::mpsc::Sender<String>,
 }
 
 impl LogSink {
+    /// Equivalent to `spawn_with(session_dir, &Default::default())`.
+    /// Useful in tests; production callers should pass their RunnerConfig.
     pub async fn spawn(session_dir: PathBuf) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
+        Self::spawn_with(session_dir, &crate::config::LogSinkConfig::default()).await
+    }
+
+    /// Spawn with explicit tuning. `flush_ms` is floored at 50ms and
+    /// `channel_capacity` at 64 by `effective_*` accessors so a hostile
+    /// or stale config can't drive these to pathological values.
+    pub async fn spawn_with(
+        session_dir: PathBuf,
+        cfg: &crate::config::LogSinkConfig,
+    ) -> io::Result<(Self, JoinHandle<io::Result<()>>)> {
         fs::create_dir_all(&session_dir).await?;
         let path = session_dir.join("log.ndjson");
         let file = OpenOptions::new().create(true).append(true).open(&path).await?;
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(4096);
+        let cap = cfg.effective_channel_capacity() as usize;
+        let flush_ms = cfg.effective_flush_ms();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(cap);
         let handle = tokio::spawn(async move {
             let mut w = BufWriter::new(file);
-            while let Some(line) = rx.recv().await {
-                w.write_all(line.as_bytes()).await?;
-                if !line.ends_with('\n') { w.write_all(b"\n").await?; }
+            // Periodic flush so live tailers see new lines promptly even
+            // when bursts are smaller than the BufWriter capacity.
+            let mut ticker = tokio::time::interval(
+                tokio::time::Duration::from_millis(flush_ms));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip the first immediate tick; nothing to flush.
+            ticker.tick().await;
+            let mut dirty = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    msg = rx.recv() => match msg {
+                        Some(line) => {
+                            w.write_all(line.as_bytes()).await?;
+                            if !line.ends_with('\n') { w.write_all(b"\n").await?; }
+                            dirty = true;
+                        }
+                        None => {
+                            // All senders dropped — final flush + exit.
+                            w.flush().await?;
+                            return Ok(());
+                        }
+                    },
+                    _ = ticker.tick() => {
+                        if dirty {
+                            w.flush().await?;
+                            dirty = false;
+                        }
+                    }
+                }
             }
-            w.flush().await?;
-            Ok(())
         });
         Ok((Self { tx }, handle))
     }
@@ -185,6 +273,7 @@ pub struct ReaderStats {
     pub errors_written: u64,
     pub traces_forwarded: u64,
     pub stats_written: u64,
+    pub inputs_seen: u64,
 }
 
 /// Generic over any AsyncRead — lets tests drive with a custom reader.
@@ -217,21 +306,39 @@ where R: AsyncRead + Unpin,
         let event = StderrEvent::from_line(trimmed);
 
         match &event {
-            StderrEvent::Trace { id, src, labels } => {
+            StderrEvent::Input { .. } => {
+                stats.inputs_seen += 1;
+                if let Some(coll) = &stats_coll { coll.inc_rows_in(&stage_id); }
+                // NOT forwarded to Tracer — input events stay in journal counters
+                // only. Trace files remain the data-output chain only.
+            }
+            StderrEvent::Trace { id, src, labels, channel } => {
                 stats.traces_forwarded += 1;
-                if let Some(coll) = &stats_coll { coll.inc_rows_out(&stage_id); }
-                if let Some(tr) = &tracer {
-                    let src_val = match src.as_deref() {
-                        Some(s) if !s.is_empty() => Src::One(s.to_string()),
-                        _ => Src::One(String::new()),
-                    };
-                    let mut ev = TraceEvent::now(stage_id.clone(), src_val);
-                    if let Some(id) = id { ev = ev.with_id(id.clone()); }
-                    if let Some(labels) = labels.clone() { ev = ev.with_labels(labels); }
-                    tr.emit(ev);
+                // Counter routing per channel. Default (None) treated as
+                // data so older tools continue to count toward rows_out.
+                if let Some(coll) = &stats_coll {
+                    match channel.as_deref() {
+                        Some("meta") => coll.inc_meta(&stage_id),
+                        _            => coll.inc_rows_out(&stage_id),
+                    }
+                }
+                // Only data-channel traces feed the trace file — meta
+                // traces exist for stats only and would clutter the chain.
+                let is_meta = matches!(channel.as_deref(), Some("meta"));
+                if !is_meta {
+                    if let Some(tr) = &tracer {
+                        let src_val = match src.as_deref() {
+                            Some(s) if !s.is_empty() => Src::One(s.to_string()),
+                            _ => Src::One(String::new()),
+                        };
+                        let mut ev = TraceEvent::now(stage_id.clone(), src_val);
+                        if let Some(id) = id { ev = ev.with_id(id.clone()); }
+                        if let Some(labels) = labels.clone() { ev = ev.with_labels(labels); }
+                        tr.emit(ev);
+                    }
                 }
             }
-            StderrEvent::Error { .. } => {
+            StderrEvent::Error { error, input, id, src } => {
                 stats.errors_written += 1;
                 if let Some(coll) = &stats_coll { coll.inc_errors(&stage_id); }
                 // Lazy-open the errors log only when we actually get one.
@@ -241,7 +348,19 @@ where R: AsyncRead + Unpin,
                     errors_writer = Some(BufWriter::new(f));
                 }
                 if let Some(w) = errors_writer.as_mut() {
-                    let serialised = serde_json::to_string(&event)
+                    // Inject `t` (ms since epoch) and `sid` so `dpe log
+                    // --stage X` can time-merge per-stage errors with
+                    // per-stage logs from log.ndjson. Without these,
+                    // ordering across the two files isn't possible.
+                    let mut rec = serde_json::Map::new();
+                    rec.insert("type".into(),  Value::String("error".into()));
+                    rec.insert("t".into(),     Value::Number(crate::journal::now_ms().into()));
+                    rec.insert("sid".into(),   Value::String(stage_id.clone()));
+                    rec.insert("error".into(), Value::String(error.clone()));
+                    if let Some(v) = input.clone() { rec.insert("input".into(), v); }
+                    if let Some(v) = id.clone()    { rec.insert("id".into(),    Value::String(v)); }
+                    if let Some(v) = src.clone()   { rec.insert("src".into(),   Value::String(v)); }
+                    let serialised = serde_json::to_string(&Value::Object(rec))
                         .unwrap_or_else(|_| trimmed.to_string());
                     w.write_all(serialised.as_bytes()).await?;
                     w.write_all(b"\n").await?;
@@ -378,7 +497,17 @@ mod tests {
         for l in &lines {
             let v: Value = serde_json::from_str(l).unwrap();
             assert_eq!(v["type"], "error");
+            // v2.0.2: every persisted error gets `t` (ms since epoch) +
+            // `sid` so `dpe log --stage X` can merge logs+errors.
+            assert!(v["t"].is_number(), "missing t field: {l}");
+            assert_eq!(v["sid"], "s-001");
         }
+        // First line still carries its original input/id/src untouched.
+        let v0: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(v0["error"], "boom");
+        assert_eq!(v0["input"], serde_json::json!({"x":1}));
+        assert_eq!(v0["id"], "a");
+        assert_eq!(v0["src"], "b");
     }
 
     #[tokio::test]
@@ -445,6 +574,66 @@ mod tests {
         let snap = coll.snapshot();
         assert_eq!(snap["s"].rows_out, 2);
         assert_eq!(snap["s"].errors, 1);
+    }
+
+    #[tokio::test]
+    async fn input_events_count_rows_in_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let coll = StatsCollector::new();
+        let input = b"{\"type\":\"input\",\"id\":\"a\",\"src\":\"u\"}\n\
+                      {\"type\":\"input\",\"id\":\"b\",\"src\":\"u\"}\n\
+                      {\"type\":\"input\",\"id\":\"c\",\"src\":\"u\"}\n";
+        let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
+        let stats = reader_task_generic(
+            r, "stage1".into(), logs, None, Some(coll.clone()), None
+        ).await.unwrap();
+        assert_eq!(stats.inputs_seen, 3);
+        let snap = coll.snapshot();
+        assert_eq!(snap["stage1"].rows_in, 3);
+        assert_eq!(snap["stage1"].rows_out, 0);
+        assert_eq!(snap["stage1"].meta, 0);
+    }
+
+    #[tokio::test]
+    async fn meta_channel_traces_count_meta_not_rows_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let coll = StatsCollector::new();
+        let input = b"{\"type\":\"trace\",\"id\":\"a\",\"src\":\"u\",\"labels\":{},\"channel\":\"data\"}\n\
+                      {\"type\":\"trace\",\"id\":\"b\",\"src\":\"u\",\"labels\":{},\"channel\":\"meta\"}\n\
+                      {\"type\":\"trace\",\"id\":\"c\",\"src\":\"u\",\"labels\":{}}\n";
+        let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
+        let _ = reader_task_generic(
+            r, "s".into(), logs, None, Some(coll.clone()), None
+        ).await.unwrap();
+        let snap = coll.snapshot();
+        // channel:"data" + missing channel both count toward rows_out (back-compat).
+        assert_eq!(snap["s"].rows_out, 2);
+        // channel:"meta" counts toward meta only.
+        assert_eq!(snap["s"].meta, 1);
+    }
+
+    #[tokio::test]
+    async fn meta_traces_do_not_reach_tracer() {
+        // meta-channel traces are stats-only — they MUST NOT be appended
+        // to trace.N.ndjson (which represents the data-output chain).
+        let tmp = tempfile::tempdir().unwrap();
+        let sess = tmp.path().join("session");
+        let logs = sess.join("logs");
+        let (tracer, trace_handle) =
+            crate::trace::Tracer::spawn(&sess, crate::trace::TraceConfig::default())
+                .await.unwrap();
+        let input = b"{\"type\":\"trace\",\"id\":\"a\",\"src\":\"x\",\"labels\":{},\"channel\":\"data\"}\n\
+                      {\"type\":\"trace\",\"id\":\"m\",\"src\":\"x\",\"labels\":{},\"channel\":\"meta\"}\n";
+        let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
+        let _ = reader_task_generic(
+            r, "s".into(), logs, Some(tracer.clone()), None, None
+        ).await.unwrap();
+        tracer.shutdown();
+        let tstats = trace_handle.await.unwrap().unwrap();
+        // Only the data-channel trace was forwarded.
+        assert_eq!(tstats.events_written, 1);
     }
 
     #[tokio::test]

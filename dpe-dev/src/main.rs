@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+mod bom;
 mod embedded;
 mod scaffold;
 mod setup;
@@ -13,8 +14,53 @@ mod verify;
 #[derive(Parser)]
 #[command(name = "dpe-dev", version, about = "Scaffold, build, test, and verify DPE tools")]
 struct Cli {
+    /// Runner config file. Resolution order matches `dpe`:
+    /// `--config` → `DPE_CONFIG` env → `<cwd>/config.toml` → `~/.dpe/config.toml`
+    /// → `<bin>/config.toml`. Used by subcommands that touch the runner
+    /// config (currently: setup).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// Resolve which config path dpe-dev should treat as authoritative.
+/// Mirrors the runner's `default_config_path` chain so users don't
+/// have to learn two sets of rules.
+fn resolve_config_path(cli_override: Option<&Path>) -> PathBuf {
+    if let Some(p) = cli_override {
+        return p.to_path_buf();
+    }
+    if let Ok(env) = std::env::var("DPE_CONFIG") {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate = cwd.join("config.toml");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let candidate = home.join(".dpe").join("config.toml");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(adjacent) = exe.parent().map(|d| d.join("config.toml")) {
+            if adjacent.exists() {
+                return adjacent;
+            }
+        }
+    }
+    // Nothing exists — fall through to ~/.dpe/config.toml as the canonical
+    // would-be path. setup() creates it if missing.
+    dirs::home_dir()
+        .map(|h| h.join(".dpe").join("config.toml"))
+        .unwrap_or_else(|| PathBuf::from("config.toml"))
 }
 
 #[derive(Subcommand)]
@@ -87,6 +133,7 @@ impl Runtime {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config_path = resolve_config_path(cli.config.as_deref());
     match cli.cmd {
         Cmd::Scaffold { name, runtime, out, description, frameworks_dir } => {
             scaffold::scaffold(&name, runtime, &out, &description, frameworks_dir.as_deref())
@@ -95,7 +142,7 @@ fn main() -> Result<()> {
         Cmd::Test  { dir }       => test(&dir),
         Cmd::Verify{ dir }       => verify::verify(&dir),
         Cmd::Setup { path, force } => {
-            let ws = setup::setup(path, force)?;
+            let ws = setup::setup(path, force, &config_path)?;
             println!("[OK] workspace ready: {}", ws.display());
             Ok(())
         }
@@ -109,7 +156,7 @@ fn read_runtime(dir: &Path) -> Result<String> {
     let meta_path = dir.join("meta.json");
     let raw = std::fs::read_to_string(&meta_path)
         .with_context(|| format!("read {:?}", meta_path))?;
-    let j: serde_json::Value = serde_json::from_str(&raw)?;
+    let j: serde_json::Value = serde_json::from_str(bom::strip_bom(&raw))?;
     Ok(j.get("runtime").and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("meta.json missing 'runtime'"))?
         .to_string())
@@ -177,7 +224,7 @@ fn check(dir: &Path) -> Result<()> {
     let meta_path = dir.join("meta.json");
     if !meta_path.exists() { bail!("meta.json not found in {:?}", dir); }
     let meta_raw = std::fs::read_to_string(&meta_path)?;
-    let meta: serde_json::Value = serde_json::from_str(&meta_raw)
+    let meta: serde_json::Value = serde_json::from_str(bom::strip_bom(&meta_raw))
         .with_context(|| format!("parse meta.json in {:?}", dir))?;
     for field in &["name", "version", "runtime"] {
         if meta.get(field).is_none() {
@@ -192,7 +239,7 @@ fn check(dir: &Path) -> Result<()> {
             no_schema: true,
             legacy_octal_numbers: false,
         );
-        serde_saphyr::from_str_with_options::<serde_json::Value>(&spec_raw, opts)
+        serde_saphyr::from_str_with_options::<serde_json::Value>(bom::strip_bom(&spec_raw), opts)
             .with_context(|| "parse spec.yaml")?;
     }
     println!("[check] {:?} OK (name={}, runtime={})",

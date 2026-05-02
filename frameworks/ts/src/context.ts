@@ -71,7 +71,8 @@ export class Context {
     const outId = opts.id ?? this.id;
     const outSrc = opts.src ?? this.src;
     // Emit merged trace first (always, even with empty labels), then data, then clear.
-    writeTrace(outId, outSrc, this._labels);
+    // channel:"data" → runner counts as rows_out.
+    writeTrace(outId, outSrc, this._labels, 'data');
     this._labels = {};
     writeData(v, outId, outSrc);
   }
@@ -90,6 +91,9 @@ export class Context {
   }
 
   meta(v: JSONValue): void {
+    // Emit a meta-channel trace before the meta envelope so the runner
+    // can increment its per-stage `meta` counter. Inherits ctx id/src.
+    writeTrace(this.id, this.src, {}, 'meta');
     writeMeta(v);
   }
 

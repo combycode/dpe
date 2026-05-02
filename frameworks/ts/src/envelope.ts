@@ -101,9 +101,29 @@ export function writeError(v: JSONValue, err: unknown, id: string, src: string):
   });
 }
 
-/** Merged trace event flushed once per output envelope (even with empty labels). */
-export function writeTrace(id: string, src: string, labels: Record<string, JSONValue>): void {
-  _writeStderr({ type: 'trace', id, src, labels });
+/** Merged trace event flushed once per output envelope (even with empty labels).
+ *
+ *  `channel` distinguishes counter buckets at the runner side:
+ *    - `"data"` from ctx.output  → rows_out
+ *    - `"meta"` from ctx.meta    → meta
+ *  Omit the field for back-compat (older runner treats unset as data).
+ */
+export function writeTrace(
+  id: string,
+  src: string,
+  labels: Record<string, JSONValue>,
+  channel?: 'data' | 'meta',
+): void {
+  const rec: Record<string, JSONValue> = { type: 'trace', id, src, labels };
+  if (channel) rec.channel = channel;
+  _writeStderr(rec);
+}
+
+/** Input event — emitted by the runtime per envelope read from stdin,
+ *  BEFORE the processor runs. Lets the runner count rows_in for stages
+ *  that never call ctx.output (pass-through, terminal sinks). */
+export function writeInput(id: string, src: string): void {
+  _writeStderr({ type: 'input', id, src });
 }
 
 /** Custom stats event. Shape: {type:"stats", ...data}. */

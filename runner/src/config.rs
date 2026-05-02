@@ -3,9 +3,17 @@
 //! Resolution order (first that exists wins):
 //!   1. `--config <path>` CLI override
 //!   2. `DPE_CONFIG` env var
-//!   3. `<dpe-binary-dir>/config.toml` — portable / ad-hoc installs
-//!   4. `~/.dpe/config.toml` — standard install
-//!   5. built-in defaults
+//!   3. `<cwd>/config.toml` — pipeline-local override; wins when you run
+//!      `dpe ...` from a pipeline dir
+//!   4. `~/.dpe/config.toml` — standard user install
+//!   5. `<dpe-binary-dir>/config.toml` — portable / ad-hoc installs (last
+//!      so user-managed configs always win over package-bundled ones)
+//!   6. built-in defaults
+//!
+//! Changed in v2.0.1: `<cwd>/config.toml` was added at #3 and
+//! `<binary-dir>/config.toml` moved from #3 to #5. Pipeline-local config
+//! now wins automatically when the runner is invoked from the pipeline dir,
+//! removing the need for `--config <pipeline>/config.toml` boilerplate.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -27,6 +35,10 @@ pub struct RunnerConfig {
     pub logger_pipe: Option<String>,
     #[serde(default)]
     pub trace: TraceConfig,
+    /// Tuning for `$session/log.ndjson` (the structured log shared across
+    /// all stages). Added in v2.0.2 — previously hardcoded.
+    #[serde(default)]
+    pub log_sink: LogSinkConfig,
     #[serde(default)]
     pub cache: CacheConfig,
     #[serde(default)]
@@ -145,6 +157,11 @@ pub struct TraceConfig {
     pub max_labels_per_record: u32,
     #[serde(default = "d_max_label_chars")]
     pub max_labels_chars_total: u32,
+    /// Capacity of the mpsc channel feeding the trace writer task. Drops on
+    /// overflow are counted in `Tracer::dropped_count()`. Added in v2.0.2 —
+    /// previously hardcoded to 100_000.
+    #[serde(default = "d_trace_channel_capacity")]
+    pub channel_capacity: u32,
 }
 
 impl Default for TraceConfig {
@@ -155,8 +172,60 @@ impl Default for TraceConfig {
             max_segment_bytes: d_segment_bytes(),
             max_labels_per_record: d_max_labels(),
             max_labels_chars_total: d_max_label_chars(),
+            channel_capacity: d_trace_channel_capacity(),
         }
     }
+}
+
+/// Tuning for the shared session log writer (`$session/log.ndjson`).
+///
+/// Two knobs that used to be hardcoded inside `LogSink::spawn`:
+///   - `flush_ms`: periodic flush interval. The writer task wakes on this
+///     ticker and calls `BufWriter::flush()` so live `dpe log --follow`
+///     readers see new lines without waiting for the buffer to fill.
+///   - `channel_capacity`: bound on the mpsc queue between stages and the
+///     writer task. Bigger smooths bursts; smaller keeps memory tight.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogSinkConfig {
+    #[serde(default = "d_log_sink_flush_ms")]
+    pub flush_ms: u64,
+    #[serde(default = "d_log_sink_channel_capacity")]
+    pub channel_capacity: u32,
+    /// Default `--tail N` window for `dpe log <session>` when neither
+    /// `--tail` nor `--follow` is given. ENV: DPE_LOG_TAIL_DEFAULT.
+    /// Lower = quicker terminal scan; higher = more context. Added v2.0.2.
+    #[serde(default = "d_log_sink_tail_default")]
+    pub tail_default: u32,
+}
+
+impl Default for LogSinkConfig {
+    fn default() -> Self {
+        Self {
+            flush_ms: d_log_sink_flush_ms(),
+            channel_capacity: d_log_sink_channel_capacity(),
+            tail_default: d_log_sink_tail_default(),
+        }
+    }
+}
+
+impl LogSinkConfig {
+    /// Floor of 50ms — anything shorter just hammers the disk for no
+    /// observable smoothness gain.
+    pub fn effective_flush_ms(&self) -> u64 { self.flush_ms.max(50) }
+    /// Floor of 64 — too small a queue serialises bursty stages.
+    pub fn effective_channel_capacity(&self) -> u32 { self.channel_capacity.max(64) }
+    /// Floor of 1, ceiling of 100_000 — sane bounds for a one-shot tail.
+    pub fn effective_tail_default(&self) -> usize {
+        self.tail_default.clamp(1, 100_000) as usize
+    }
+}
+
+impl TraceConfig {
+    /// Floor of 100ms — anything tighter starves the disk for negligible gain.
+    pub fn effective_flush_ms(&self) -> u64 { self.flush_ms.max(100) }
+    /// Floor of 1024 — extreme low cap would drop most events.
+    pub fn effective_channel_capacity(&self) -> u32 { self.channel_capacity.max(1024) }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -219,6 +288,10 @@ fn d_flush_ms()       -> u64 { 1_000 }
 fn d_segment_bytes()  -> u64 { 268_435_456 }
 fn d_max_labels()     -> u32 { 10 }
 fn d_max_label_chars()-> u32 { 1_000 }
+fn d_trace_channel_capacity()    -> u32 { 100_000 }
+fn d_log_sink_flush_ms()         -> u64 { 250 }
+fn d_log_sink_channel_capacity() -> u32 { 4_096 }
+fn d_log_sink_tail_default()     -> u32 { 50 }
 fn d_cache_mode()     -> CacheMode { CacheMode::Use }
 fn d_shard_depth()    -> u32 { 2 }
 fn d_max_restarts()   -> u32 { 3 }
@@ -226,21 +299,43 @@ fn d_restart_backoff()-> Vec<u64> { vec![500, 2_000, 5_000] }
 fn d_sigterm_grace()  -> u64 { 10_000 }
 fn d_max_sessions()   -> u32 { 50 }
 
-/// Resolve the config path to load. Priority (first existing wins):
-///   1. `--config <path>` CLI arg (caller passes via `path` arg)
-///   2. `DPE_CONFIG` env var
-///   3. `<binary_dir>/config.toml`  — portable installs
-///   4. `~/.dpe/config.toml`         — standard install
+/// Resolve the config path that `dpe` would load right now. Returns the
+/// FIRST existing path in the resolution chain (see module docstring), or
+/// — if none exist — the path that WOULD be used by default
+/// (`~/.dpe/config.toml`). The "would-be" fallback lets `dpe config path`
+/// always print a meaningful answer for a fresh install.
 ///
-/// Returns None only if none of the locations can be determined (unusual).
+/// Returns None only if even the home dir is unavailable (very unusual —
+/// some sandboxed envs).
 pub fn default_config_path() -> Option<PathBuf> {
+    // 2. DPE_CONFIG env var (1. is the CLI arg, handled by the caller)
     if let Ok(env) = std::env::var("DPE_CONFIG") {
-        if !env.is_empty() { return Some(PathBuf::from(env)); }
+        if !env.is_empty() {
+            return Some(PathBuf::from(env));
+        }
     }
+    // 3. <cwd>/config.toml — pipeline-local
+    if let Some(cwd) = cwd_config_path() {
+        if cwd.exists() {
+            return Some(cwd);
+        }
+    }
+    // 4. ~/.dpe/config.toml — standard user install
+    if let Some(home) = home_config_path() {
+        if home.exists() {
+            return Some(home);
+        }
+    }
+    // 5. <binary-dir>/config.toml — portable install fallback
     if let Some(adjacent) = binary_adjacent_config() {
-        if adjacent.exists() { return Some(adjacent); }
+        if adjacent.exists() {
+            return Some(adjacent);
+        }
     }
-    dirs::home_dir().map(|h| h.join(".dpe").join("config.toml"))
+    // None existed. Return the canonical "would-be" path so callers can
+    // tell users where to put a config. Prefer ~/.dpe/config.toml — that's
+    // the convention.
+    home_config_path()
 }
 
 /// Path to `<binary_dir>/config.toml`, or None if we can't determine the
@@ -250,27 +345,78 @@ pub fn binary_adjacent_config() -> Option<PathBuf> {
         .and_then(|p| p.parent().map(|d| d.join("config.toml")))
 }
 
+/// Path to `<cwd>/config.toml`, or None if cwd is unreachable.
+pub fn cwd_config_path() -> Option<PathBuf> {
+    std::env::current_dir().ok().map(|d| d.join("config.toml"))
+}
+
 /// Canonical home config path (`~/.dpe/config.toml`). Not guaranteed to exist.
 pub fn home_config_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".dpe").join("config.toml"))
 }
 
 /// Load config from the given path, or the resolved default if None.
-/// Missing file → default config.
+/// Missing file → default config. ENV var overrides (DPE_*) are then
+/// overlaid on top of whatever was loaded from disk so deployment-time
+/// tuning doesn't require editing the user's config.toml.
 pub fn load(path: Option<&Path>) -> Result<RunnerConfig, ConfigError> {
     let p = match path {
         Some(p) => p.to_path_buf(),
         None => match default_config_path() {
             Some(p) => p,
-            None => return Ok(RunnerConfig::default()),
+            None => {
+                let mut cfg = RunnerConfig::default();
+                apply_env_overrides(&mut cfg);
+                return Ok(cfg);
+            }
         },
     };
-    if !p.exists() {
-        return Ok(RunnerConfig::default());
+    let mut cfg = if !p.exists() {
+        RunnerConfig::default()
+    } else {
+        let raw = std::fs::read_to_string(&p)
+            .map_err(|e| ConfigError::Read(p.clone(), e.to_string()))?;
+        toml::from_str(&raw).map_err(|e| ConfigError::Parse(p, e.to_string()))?
+    };
+    apply_env_overrides(&mut cfg);
+    Ok(cfg)
+}
+
+/// Apply DPE_* env-var overrides over a loaded RunnerConfig.
+///
+/// Each var is optional. Parse failures are silently ignored — a typo
+/// shouldn't crash the runner; the original value stands. Coverage:
+///
+///   DPE_TRACE_FLUSH_MS, DPE_TRACE_MAX_EVENTS, DPE_TRACE_MAX_SEGMENT_BYTES,
+///   DPE_TRACE_MAX_LABELS, DPE_TRACE_MAX_LABEL_CHARS,
+///   DPE_TRACE_CHANNEL_CAPACITY,
+///   DPE_LOG_SINK_FLUSH_MS, DPE_LOG_SINK_CHANNEL_CAPACITY,
+///   DPE_JOURNAL_FLUSH_MS, DPE_MONITOR_POLL_MS, DPE_DUPLEX_BUF_BYTES,
+///   DPE_HTTP_TIMEOUT_SECS, DPE_CONTROL_CHANNEL_CAP.
+fn apply_env_overrides(cfg: &mut RunnerConfig) {
+    fn env_u64(key: &str) -> Option<u64> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
     }
-    let raw = std::fs::read_to_string(&p)
-        .map_err(|e| ConfigError::Read(p.clone(), e.to_string()))?;
-    toml::from_str(&raw).map_err(|e| ConfigError::Parse(p, e.to_string()))
+    fn env_u32(key: &str) -> Option<u32> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
+    }
+    fn env_usize(key: &str) -> Option<usize> {
+        std::env::var(key).ok().and_then(|s| s.parse().ok())
+    }
+    if let Some(v) = env_u64("DPE_TRACE_FLUSH_MS")          { cfg.trace.flush_ms = v; }
+    if let Some(v) = env_u64("DPE_TRACE_MAX_EVENTS")        { cfg.trace.max_events = v; }
+    if let Some(v) = env_u64("DPE_TRACE_MAX_SEGMENT_BYTES") { cfg.trace.max_segment_bytes = v; }
+    if let Some(v) = env_u32("DPE_TRACE_MAX_LABELS")        { cfg.trace.max_labels_per_record = v; }
+    if let Some(v) = env_u32("DPE_TRACE_MAX_LABEL_CHARS")   { cfg.trace.max_labels_chars_total = v; }
+    if let Some(v) = env_u32("DPE_TRACE_CHANNEL_CAPACITY")  { cfg.trace.channel_capacity = v; }
+    if let Some(v) = env_u64("DPE_LOG_SINK_FLUSH_MS")        { cfg.log_sink.flush_ms = v; }
+    if let Some(v) = env_u32("DPE_LOG_SINK_CHANNEL_CAPACITY") { cfg.log_sink.channel_capacity = v; }
+    if let Some(v) = env_u32("DPE_LOG_TAIL_DEFAULT")          { cfg.log_sink.tail_default = v; }
+    if let Some(v) = env_u64("DPE_JOURNAL_FLUSH_MS")     { cfg.runtime.journal_flush_ms = v; }
+    if let Some(v) = env_u64("DPE_MONITOR_POLL_MS")      { cfg.runtime.monitor_poll_ms = v; }
+    if let Some(v) = env_usize("DPE_DUPLEX_BUF_BYTES")   { cfg.runtime.duplex_buf_bytes = v; }
+    if let Some(v) = env_u64("DPE_HTTP_TIMEOUT_SECS")    { cfg.runtime.http_timeout_secs = v; }
+    if let Some(v) = env_usize("DPE_CONTROL_CHANNEL_CAP"){ cfg.runtime.control_channel_cap = v; }
 }
 
 /// Serialise and write the config to disk. Creates parent dirs as needed.
@@ -304,10 +450,32 @@ mod tests {
         let c = RunnerConfig::default();
         assert_eq!(c.trace.max_events, 10_000);
         assert_eq!(c.trace.flush_ms, 1_000);
+        assert_eq!(c.trace.channel_capacity, 100_000);
+        assert_eq!(c.log_sink.flush_ms, 250);
+        assert_eq!(c.log_sink.channel_capacity, 4_096);
+        assert_eq!(c.log_sink.tail_default, 50);
         assert_eq!(c.cache.default_mode, CacheMode::Use);
         assert_eq!(c.cache.shard_depth, 2);
         assert_eq!(c.spawn.max_restarts, 3);
         assert_eq!(c.spawn.restart_backoff_ms, vec![500, 2_000, 5_000]);
+    }
+
+    #[test]
+    fn log_sink_floors_apply() {
+        let c = LogSinkConfig { flush_ms: 1, channel_capacity: 1, tail_default: 0 };
+        assert_eq!(c.effective_flush_ms(), 50);
+        assert_eq!(c.effective_channel_capacity(), 64);
+        // tail_default floor=1, ceiling=100_000.
+        assert_eq!(c.effective_tail_default(), 1);
+        let huge = LogSinkConfig { tail_default: 1_000_000, ..Default::default() };
+        assert_eq!(huge.effective_tail_default(), 100_000);
+    }
+
+    #[test]
+    fn trace_floors_apply() {
+        let c = TraceConfig { flush_ms: 1, channel_capacity: 1, ..TraceConfig::default() };
+        assert_eq!(c.effective_flush_ms(), 100);
+        assert_eq!(c.effective_channel_capacity(), 1024);
     }
 
     #[test]

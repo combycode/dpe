@@ -1,6 +1,6 @@
 [package]
 name = "combycode-dpe-tool-normalize"
-version = "2.0.0-rc1"
+version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- universal row normalizer: dict replace, type coercion, key rename, shape transforms, profile-based rulebook dispatch"
 license = "AGPL-3.0-or-later"

@@ -228,6 +228,8 @@ mod tests {
             input:  PathBuf::from("/in"),
             output: PathBuf::from("/out"),
             cache_mode: CacheMode::Use,
+            temp_override:    None,
+            storage_override: None,
         }
     }
 

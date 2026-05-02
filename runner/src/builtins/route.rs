@@ -9,6 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 
 use crate::expr::{compile, evaluate, Expr, Scope};
+use crate::stderr::StatsCollector;
 use crate::types::OnError;
 
 use super::{build_scope, is_truthy, BuiltinError, BuiltinWriter};
@@ -35,7 +36,7 @@ impl std::fmt::Debug for BuiltinRoute {
 impl BuiltinRoute {
     pub fn compile(
         stage_id: &str,
-        routes: &BTreeMap<String, String>,
+        routes: &indexmap::IndexMap<String, String>,
         writers: BTreeMap<String, BuiltinWriter>,
         on_error: OnError,
     ) -> Result<Self, BuiltinError> {
@@ -70,7 +71,21 @@ impl BuiltinRoute {
     pub fn spawn_task<R>(self, upstream: R) -> JoinHandle<io::Result<RouteStats>>
     where R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(route_task(self, upstream))
+        tokio::spawn(route_task(self, upstream, None))
+    }
+
+    /// Same as `spawn_task`, but also pushes per-envelope counters into
+    /// the shared `StatsCollector` so the runner's journal reflects route
+    /// activity. `rows_in` is incremented per upstream line; `rows_out`
+    /// per envelope written to a downstream channel.
+    pub fn spawn_task_with_stats<R>(
+        self,
+        upstream: R,
+        stats: StatsCollector,
+    ) -> JoinHandle<io::Result<RouteStats>>
+    where R: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(route_task(self, upstream, Some(stats)))
     }
 }
 
@@ -82,7 +97,11 @@ pub struct RouteStats {
     pub rows_errored: u64,
 }
 
-async fn route_task<R>(mut route: BuiltinRoute, upstream: R) -> io::Result<RouteStats>
+async fn route_task<R>(
+    mut route: BuiltinRoute,
+    upstream: R,
+    stats_coll: Option<StatsCollector>,
+) -> io::Result<RouteStats>
 where R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(upstream);
@@ -95,11 +114,13 @@ where R: AsyncRead + Unpin,
         if n == 0 { break; }
         if line.trim().is_empty() { continue; }
         stats.rows_in += 1;
+        if let Some(c) = &stats_coll { c.inc_rows_in(&route.stage_id); }
 
         let env: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => {
                 stats.rows_errored += 1;
+                if let Some(c) = &stats_coll { c.inc_errors(&route.stage_id); }
                 if matches!(route.on_error, OnError::Fail) {
                     return Err(io::Error::new(io::ErrorKind::InvalidData,
                         "route: invalid envelope JSON"));
@@ -120,9 +141,11 @@ where R: AsyncRead + Unpin,
             Some(w) => {
                 w.write_all(line.as_bytes()).await?;
                 stats.rows_routed += 1;
+                if let Some(c) = &stats_coll { c.inc_rows_out(&route.stage_id); }
             }
             None => {
                 stats.rows_errored += 1;
+                if let Some(c) = &stats_coll { c.inc_errors(&route.stage_id); }
             }
         }
     }

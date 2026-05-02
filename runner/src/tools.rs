@@ -160,7 +160,8 @@ fn load_from_dir(dir: &Path) -> Result<ResolvedTool, ToolError> {
     let meta_path = dir.join("meta.json");
     let raw = std::fs::read_to_string(&meta_path)
         .map_err(|e| ToolError::Read(meta_path.clone(), e.to_string()))?;
-    let meta: ToolMeta = serde_json::from_str(&raw)
+    // Tolerate UTF-8 BOM in user-authored meta.json files (Windows editors).
+    let meta: ToolMeta = serde_json::from_str(crate::bom::strip_bom(&raw))
         .map_err(|e| ToolError::Parse(meta_path.clone(), e.to_string()))?;
 
     let invocation = build_invocation(&meta, dir)?;
@@ -344,6 +345,23 @@ mod tests {
         let r = resolve("foo", tmp.path(), &RunnerConfig::default()).unwrap();
         assert_eq!(r.meta.name, "foo");
         assert!(matches!(r.invocation, Invocation::Binary { .. }));
+    }
+
+    #[test] fn meta_json_with_utf8_bom_parses_cleanly() {
+        // Regression for v2.0.0: Windows editors that save UTF-8 with BOM
+        // (`EF BB BF`) tripped serde_json with "expected value at line 1
+        // column 1". `bom::strip_bom` at the read site fixes it.
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("withbom");
+        fs::create_dir_all(&local).unwrap();
+        let mut bytes = vec![0xEF, 0xBB, 0xBF]; // UTF-8 BOM
+        bytes.extend_from_slice(
+            br#"{"name":"withbom","runtime":"rust","entry":"bin"}"#
+        );
+        fs::write(local.join("meta.json"), &bytes).unwrap();
+        mk_binary(&local, "bin");
+        let r = resolve("withbom", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert_eq!(r.meta.name, "withbom");
     }
 
     #[test] fn local_preferred_over_tools_paths() {

@@ -8,6 +8,7 @@ use tokio::fs::{self, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 
+use crate::stderr::StatsCollector;
 use crate::trace::{Src, TraceEvent, Tracer};
 use crate::types::{DedupHashAlgo, OnDuplicate};
 
@@ -94,7 +95,21 @@ impl BuiltinDedup {
     pub fn spawn_task<R>(self, upstream: R) -> JoinHandle<io::Result<DedupStats>>
     where R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(dedup_task(self, upstream))
+        tokio::spawn(dedup_task(self, upstream, None))
+    }
+
+    /// Spawn the dedup task with live counter updates pushed into the
+    /// shared `StatsCollector`. `rows_in` per upstream line, `rows_out`
+    /// per envelope passed downstream (kept rows + meta records emitted
+    /// for `on_duplicate=Meta`).
+    pub fn spawn_task_with_stats<R>(
+        self,
+        upstream: R,
+        stats: StatsCollector,
+    ) -> JoinHandle<io::Result<DedupStats>>
+    where R: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(dedup_task(self, upstream, Some(stats)))
     }
 
     pub fn seen_count(&self) -> usize { self.seen.len() }
@@ -108,7 +123,11 @@ pub struct DedupStats {
     pub rows_errored: u64,
 }
 
-async fn dedup_task<R>(mut dedup: BuiltinDedup, upstream: R) -> io::Result<DedupStats>
+async fn dedup_task<R>(
+    mut dedup: BuiltinDedup,
+    upstream: R,
+    stats_coll: Option<StatsCollector>,
+) -> io::Result<DedupStats>
 where R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(upstream);
@@ -128,14 +147,17 @@ where R: AsyncRead + Unpin,
         if n == 0 { break; }
         if line.trim().is_empty() { continue; }
         stats.rows_in += 1;
+        if let Some(c) = &stats_coll { c.inc_rows_in(&dedup.stage_id); }
 
         let env: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => {
                 stats.rows_errored += 1;
+                if let Some(c) = &stats_coll { c.inc_errors(&dedup.stage_id); }
                 // Forward malformed lines unchanged so we never silently lose
                 // data on a parse glitch.
                 dedup.writer.write_all(line.as_bytes()).await?;
+                if let Some(c) = &stats_coll { c.inc_rows_out(&dedup.stage_id); }
                 continue;
             }
         };
@@ -144,6 +166,10 @@ where R: AsyncRead + Unpin,
         if dedup.seen.contains(&key_hash) {
             stats.rows_dropped += 1;
             handle_duplicate(&mut dedup, &env, key_hash).await?;
+            // OnDuplicate::Meta writes a meta envelope downstream — count it.
+            if matches!(dedup.on_duplicate, OnDuplicate::Meta) {
+                if let Some(c) = &stats_coll { c.inc_meta(&dedup.stage_id); }
+            }
             continue;
         }
 
@@ -151,6 +177,7 @@ where R: AsyncRead + Unpin,
         write_index_entry(&mut index_file, key_hash, dedup.hash_algo).await?;
         dedup.writer.write_all(line.as_bytes()).await?;
         stats.rows_passed += 1;
+        if let Some(c) = &stats_coll { c.inc_rows_out(&dedup.stage_id); }
     }
 
     if let Err(e) = index_file.flush().await {

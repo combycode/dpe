@@ -18,7 +18,39 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::state::{StageState, StateCollector};
 use crate::stderr::{StageCounters, StatsCollector};
+
+/// What we store per-stage in `journal.json`. Combines counters from
+/// `StatsCollector` with the lifecycle state from `StateCollector`. The
+/// wire shape on disk and the editor side track each other 1:1.
+///
+/// `serde(default)` on the new fields keeps deserialisation compatible
+/// with v2.0.1 journal files (state defaults to Pending, rows_in/meta
+/// to 0).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StageJournalEntry {
+    #[serde(default)]
+    pub state: StageState,
+    #[serde(default)]
+    pub rows_in: u64,
+    pub rows_out: u64,
+    #[serde(default)]
+    pub meta: u64,
+    pub errors: u64,
+}
+
+impl StageJournalEntry {
+    fn from_parts(state: StageState, c: &StageCounters) -> Self {
+        Self {
+            state,
+            rows_in:  c.rows_in,
+            rows_out: c.rows_out,
+            meta:     c.meta,
+            errors:   c.errors,
+        }
+    }
+}
 
 // ═══ Journal document ════════════════════════════════════════════════════
 
@@ -31,7 +63,7 @@ pub struct Journal {
     pub ended_at: Option<u64>, // None until finalized
     pub duration_ms: Option<u64>,
     pub state: JournalState,
-    pub stages: BTreeMap<String, StageCounters>,
+    pub stages: BTreeMap<String, StageJournalEntry>,
     pub totals: Totals,
 }
 
@@ -65,12 +97,14 @@ struct JournalState_ {
     session_dir: PathBuf,
     journal: Journal,
     stats: StatsCollector,
+    state: StateCollector,
 }
 
 impl JournalWriter {
     /// Start a journal writer + periodic flush task.
     /// Returns `(writer, flush_task)`. `writer.finalize(...)` must be called
     /// on clean shutdown; the flush task is aborted automatically.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         session_dir: PathBuf,
         pipeline: String,
@@ -78,6 +112,7 @@ impl JournalWriter {
         session_id: String,
         started_at_ms: u64,
         stats: StatsCollector,
+        state: StateCollector,
         flush_interval: Duration,
     ) -> (Self, JoinHandle<()>) {
         let journal = Journal {
@@ -93,6 +128,7 @@ impl JournalWriter {
             session_dir,
             journal,
             stats,
+            state,
         }));
         let writer = Self { inner: inner.clone() };
         let task = tokio::spawn(flush_loop(inner, flush_interval));
@@ -102,13 +138,14 @@ impl JournalWriter {
     /// Finalize on clean shutdown. `state` = Succeeded / Partial / Failed.
     /// Writes the journal once more with `ended_at` + final state, regardless
     /// of whether the periodic flush has fired recently.
-    pub async fn finalize(self, state: JournalState) {
+    pub async fn finalize(self, journal_state: JournalState) {
         let mut g = self.inner.lock().await;
         let stats = g.stats.clone();
+        let state = g.state.clone();
         g.journal.ended_at   = Some(now_ms());
         g.journal.duration_ms = g.journal.ended_at.map(|e| e.saturating_sub(g.journal.started_at));
-        g.journal.state = state;
-        refresh_counters(&mut g.journal, &stats);
+        g.journal.state = journal_state;
+        refresh_counters(&mut g.journal, &stats, &state);
         let session_dir = g.session_dir.clone();
         let journal_copy = g.journal.clone();
         drop(g);
@@ -123,7 +160,8 @@ async fn flush_loop(state: Arc<Mutex<JournalState_>>, interval: Duration) {
         ticker.tick().await;
         let mut g = state.lock().await;
         let stats = g.stats.clone();
-        refresh_counters(&mut g.journal, &stats);
+        let stage_state = g.state.clone();
+        refresh_counters(&mut g.journal, &stats, &stage_state);
         let session_dir = g.session_dir.clone();
         let journal_copy = g.journal.clone();
         drop(g);
@@ -131,19 +169,37 @@ async fn flush_loop(state: Arc<Mutex<JournalState_>>, interval: Duration) {
     }
 }
 
-fn refresh_counters(journal: &mut Journal, stats: &StatsCollector) {
-    let snap = stats.snapshot();
-    journal.stages = snap.clone();
+fn refresh_counters(journal: &mut Journal, stats: &StatsCollector, state: &StateCollector) {
+    let counters_snap = stats.snapshot();
+    let states_snap   = state.snapshot();
+    let mut entries: BTreeMap<String, StageJournalEntry> = BTreeMap::new();
+    // Pending vs Running is derived from any non-zero counter — same
+    // logic the wire uses, so disk + wire stay consistent.
+    for (sid, c) in &counters_snap {
+        let st = match states_snap.get(sid).copied() {
+            Some(s) => s,
+            None if c.rows_in > 0 || c.rows_out > 0 || c.errors > 0
+                => StageState::Running,
+            None => StageState::Pending,
+        };
+        entries.insert(sid.clone(), StageJournalEntry::from_parts(st, c));
+    }
+    // Stages that have an explicit state but no counter yet (e.g. a stage
+    // that was Cancelled before any envelope flowed) — surface them too.
+    for (sid, st) in &states_snap {
+        entries.entry(sid.clone()).or_insert_with(|| StageJournalEntry {
+            state: *st, ..Default::default()
+        });
+    }
+    journal.stages = entries;
+
     let mut totals = Totals::default();
-    for c in snap.values() {
+    for c in counters_snap.values() {
         totals.envelopes_observed += c.rows_out;
         totals.errors             += c.errors;
     }
-    // stages_ok / stages_failed get filled in at finalize time from exit codes,
-    // but we already know any stage with errors > 0 had trouble. Simple heuristic
-    // during the run: stages_failed = stages with errors > 0.
-    totals.stages_ok = snap.iter().filter(|(_, c)| c.errors == 0).count() as u32;
-    totals.stages_failed = snap.iter().filter(|(_, c)| c.errors > 0).count() as u32;
+    totals.stages_ok = counters_snap.iter().filter(|(_, c)| c.errors == 0).count() as u32;
+    totals.stages_failed = counters_snap.iter().filter(|(_, c)| c.errors > 0).count() as u32;
     journal.totals = totals;
 }
 
@@ -189,7 +245,7 @@ pub fn rebuild_from_disk(session_dir: &Path) -> std::io::Result<Journal> {
         .unwrap_or("")
         .to_string();
 
-    let mut stages: BTreeMap<String, StageCounters> = BTreeMap::new();
+    let mut stages: BTreeMap<String, StageJournalEntry> = BTreeMap::new();
 
     // stages.json — load known stage names so they appear even with zero counts.
     let stages_json = session_dir.join("stages.json");
@@ -270,15 +326,18 @@ mod tests {
         let session = tmp.path().join("s");
         std::fs::create_dir_all(&session).unwrap();
         let stats = StatsCollector::new();
+        let state = StateCollector::new();
         let (writer, task) = JournalWriter::spawn(
             session.clone(), "p".into(), "v".into(), "sid".into(),
-            1_000_000, stats.clone(), Duration::from_millis(50),
+            1_000_000, stats.clone(), state.clone(), Duration::from_millis(50),
         );
 
         // Simulate stage activity.
+        stats.inc_rows_in("a");
         stats.inc_rows_out("a");
         stats.inc_rows_out("a");
         stats.inc_errors("a");
+        // No explicit terminal state → derived to Running by refresh_counters.
 
         // Wait for at least one periodic flush.
         tokio::time::sleep(Duration::from_millis(120)).await;
@@ -287,16 +346,20 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(v["state"], "running");
+        assert_eq!(v["stages"]["a"]["state"], "running");
+        assert_eq!(v["stages"]["a"]["rows_in"], 1);
         assert_eq!(v["stages"]["a"]["rows_out"], 2);
         assert_eq!(v["stages"]["a"]["errors"], 1);
         assert_eq!(v["totals"]["envelopes_observed"], 2);
 
-        // Finalize.
+        // Finalize → mark stage Succeeded explicitly first.
+        state.mark("a", StageState::Succeeded);
         writer.finalize(JournalState::Succeeded).await;
         task.abort();
         let v: serde_json::Value = serde_json::from_slice(
             &std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(v["state"], "succeeded");
+        assert_eq!(v["stages"]["a"]["state"], "succeeded");
         assert!(v["ended_at"].is_number());
         assert!(v["duration_ms"].is_number());
     }

@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dpe._accumulators import Memory
 from dpe._context import Context
-from dpe._envelope import parse_envelope, write_log
+from dpe._envelope import parse_envelope, write_input, write_log
 
 
 class Runtime:
@@ -88,6 +88,12 @@ class Runtime:
             id = envelope.get("id", "")
             src = envelope.get("src", "")
             v = envelope.get("v", {})
+
+            # Emit an `input` event BEFORE the processor runs so the runner
+            # can count rows_in for every stage that reads stdin — including
+            # pass-through tools and terminal sinks that never call
+            # ctx.output() (and therefore wouldn't otherwise emit a trace).
+            write_input(id, src)
 
             ctx = self.create_ctx(id, src)
             try:

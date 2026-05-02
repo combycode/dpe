@@ -6,6 +6,7 @@
   "oneOf": [
     { "$ref": "#/$defs/log" },
     { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/input" },
     { "$ref": "#/$defs/trace" },
     { "$ref": "#/$defs/stats" }
   ],
@@ -24,7 +25,7 @@
     },
     "error": {
       "title": "error",
-      "description": "Per-row error from ctx.error(v, msg). Carries the original input envelope's id/src so the runner can reconstruct provenance.",
+      "description": "Per-row error from ctx.error(v, msg). Carries the original input envelope's id/src so the runner can reconstruct provenance. The runner enriches the on-disk form with `t` (ms since epoch) and `sid` (stage id) when persisting to <session>/logs/<stage>_errors.log so dpe log can time-merge with logs.",
       "type": "object",
       "required": ["type", "error", "input", "id", "src"],
       "properties": {
@@ -32,20 +33,35 @@
         "error": { "type": "string" },
         "input": true,
         "id":    { "type": "string" },
-        "src":   { "type": "string" }
+        "src":   { "type": "string" },
+        "t":     { "type": "integer", "minimum": 0 },
+        "sid":   { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "input": {
+      "title": "input",
+      "description": "Emitted by the framework runtime per envelope read from stdin, BEFORE the processor runs. Lets the runner count rows_in for stages that never call ctx.output() (pass-through tools, terminal sinks). Added in v2.0.2.",
+      "type": "object",
+      "required": ["type", "id", "src"],
+      "properties": {
+        "type": { "const": "input" },
+        "id":   { "type": "string" },
+        "src":  { "type": "string" }
       },
       "additionalProperties": false
     },
     "trace": {
       "title": "trace",
-      "description": "Merged trace event emitted by the framework on every ctx.output(). The runner appends these to the session trace log; tool code never emits this directly.",
+      "description": "Merged trace event emitted by the framework on every ctx.output() (channel=data) or ctx.meta() (channel=meta). The runner appends data-channel traces to the session trace log; tool code never emits this directly. Missing `channel` is treated as data for backward compatibility with v2.0.1 tools.",
       "type": "object",
       "required": ["type", "id", "src", "labels"],
       "properties": {
-        "type":   { "const": "trace" },
-        "id":     { "type": "string" },
-        "src":    { "type": "string" },
-        "labels": { "type": "object" }
+        "type":    { "const": "trace" },
+        "id":      { "type": "string" },
+        "src":     { "type": "string" },
+        "labels":  { "type": "object" },
+        "channel": { "type": "string", "enum": ["data", "meta"] }
       },
       "additionalProperties": false
     },

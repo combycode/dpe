@@ -60,6 +60,8 @@ fn ctx_for(dir: &std::path::Path) -> SessionContext {
         input:         dir.join("input"),
         output:        dir.join("output"),
         cache_mode:    CacheMode::Use,
+        temp_override:    None,
+        storage_override: None,
     }
 }
 

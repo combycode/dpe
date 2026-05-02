@@ -91,12 +91,43 @@ pub fn write_error(v: &Value, err: &str, id: &str, src: &str, err_out: &mut dyn 
 }
 
 /// Write merged trace event to stderr. Emitted by ctx before each output.
-pub fn write_trace(id: &str, src: &str, labels: &Value, err_out: &mut dyn Write) {
-    let record = serde_json::json!({
+///
+/// `channel` distinguishes counter buckets at the runner side:
+///   - `"data"` — produced by `ctx.output()`. Counts toward `rows_out`.
+///   - `"meta"` — produced by `ctx.meta()`. Counts toward `meta`.
+///
+/// `None` is written without a `channel` key — the runner treats unset
+/// as "data" for backward compatibility with older tools.
+pub fn write_trace(
+    id: &str,
+    src: &str,
+    labels: &Value,
+    channel: Option<&str>,
+    err_out: &mut dyn Write,
+) {
+    let mut record = serde_json::json!({
         "type": "trace",
         "id": id,
         "src": src,
         "labels": labels,
+    });
+    if let Some(ch) = channel {
+        record["channel"] = Value::String(ch.to_string());
+    }
+    let _ = writeln!(err_out, "{}", serde_json::to_string(&record)
+            .expect("record serializes — Value tree, no non-string map keys"));
+    let _ = err_out.flush();
+}
+
+/// Write input event to stderr. Emitted by the runtime once per envelope
+/// read from stdin, BEFORE the processor runs. Lets the runner count
+/// `rows_in` even for pass-through stages and terminal sinks that never
+/// call `ctx.output()`.
+pub fn write_input(id: &str, src: &str, err_out: &mut dyn Write) {
+    let record = serde_json::json!({
+        "type": "input",
+        "id": id,
+        "src": src,
     });
     let _ = writeln!(err_out, "{}", serde_json::to_string(&record)
             .expect("record serializes — Value tree, no non-string map keys"));

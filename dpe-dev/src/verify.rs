@@ -19,7 +19,7 @@ pub(crate) fn verify(dir: &Path) -> Result<()> {
     let meta_path = dir.join("meta.json");
     let raw = std::fs::read_to_string(&meta_path)
         .with_context(|| format!("read {:?}", meta_path))?;
-    let meta: serde_json::Value = serde_json::from_str(&raw)?;
+    let meta: serde_json::Value = serde_json::from_str(crate::bom::strip_bom(&raw))?;
 
     let runtime = meta.get("runtime").and_then(|v| v.as_str())
         .ok_or_else(|| anyhow!("meta.json missing 'runtime'"))?;
@@ -72,7 +72,7 @@ fn run_case(dir: &Path, runtime: &str, name: &str, case: &Path) -> Result<()> {
 
     let settings_raw = std::fs::read_to_string(&settings_path)?;
     // Normalise settings JSON to a single-line argv value.
-    let settings_value: serde_json::Value = serde_json::from_str(&settings_raw)
+    let settings_value: serde_json::Value = serde_json::from_str(crate::bom::strip_bom(&settings_raw))
         .with_context(|| "parse settings.json")?;
     let settings_str = serde_json::to_string(&settings_value)?;
 

@@ -8,7 +8,7 @@
 
 import { Context, Memory, type QueueItem, type RuntimeLike } from './context';
 import type { DataEnvelope, JSONValue } from './envelope';
-import { parseEnvelope, writeLog } from './envelope';
+import { parseEnvelope, writeInput, writeLog } from './envelope';
 
 export type Processor = (v: JSONValue, settings: JSONValue, ctx: Context) => void | Promise<void>;
 
@@ -84,6 +84,10 @@ class Runtime implements RuntimeLike {
       if (env.t !== 'd') continue;
 
       const d = env as DataEnvelope;
+      // Emit an `input` event BEFORE the processor runs so the runner
+      // can count rows_in for every stage that reads stdin — including
+      // pass-through tools and terminal sinks that never call ctx.output().
+      writeInput(d.id ?? '', d.src ?? '');
       const ctx = new Context(d.id ?? '', d.src ?? '', this.memory, this);
       try {
         await this.input(d.v, this.settings, ctx);

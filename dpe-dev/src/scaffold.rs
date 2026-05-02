@@ -13,7 +13,7 @@ use walkdir::WalkDir;
 use crate::embedded;
 use crate::Runtime;
 
-const FRAMEWORK_VERSION: &str = "2.0.0";
+const FRAMEWORK_VERSION: &str = "2.0.1";
 
 pub(crate) fn find_frameworks_dir(override_: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = override_ {

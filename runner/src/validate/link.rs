@@ -112,7 +112,7 @@ mod tests {
         }
     }
     fn stg_route(channels: &[(&str, &str)]) -> Stage {
-        let mut r = BTreeMap::new();
+        let mut r = indexmap::IndexMap::new();
         for (c, e) in channels { r.insert(c.to_string(), e.to_string()); }
         let mut s = stg("route", Some(Input::One("src".into())));
         s.routes = Some(r); s

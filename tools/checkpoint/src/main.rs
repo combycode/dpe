@@ -16,7 +16,7 @@
 //!     "poll_ms":        100
 //!   }
 
-use std::io::{self, BufRead, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -89,6 +89,8 @@ fn resolve_spool_dir(settings: &Settings) -> PathBuf {
 
 fn ingest_stdin_to_file(path: &Path) {
     let stdin = io::stdin();
+    let stderr = io::stderr();
+    let mut stderr_lock = stderr.lock();
     let file = std::fs::File::create(path).unwrap_or_else(|e| {
         eprintln!("{{\"type\":\"error\",\"error\":\"cannot create spool file: {}\"}}", e);
         std::process::exit(3);
@@ -96,6 +98,17 @@ fn ingest_stdin_to_file(path: &Path) {
     let mut writer = BufWriter::new(file);
     for line in stdin.lock().lines() {
         let line = match line { Ok(l) => l, Err(_) => break };
+        if !line.trim().is_empty() {
+            // This tool runs its own stdin loop (not the framework runtime),
+            // so we have to emit the input event manually for the runner's
+            // per-stage rows_in counter. Fish id/src out of the envelope —
+            // best effort; missing fields are emitted as empty strings.
+            if let Some(env) = combycode_dpe::envelope::parse_envelope(&line) {
+                let id  = env.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let src = env.get("src").and_then(|v| v.as_str()).unwrap_or("");
+                combycode_dpe::envelope::write_input(id, src, &mut stderr_lock);
+            }
+        }
         let _ = writer.write_all(line.as_bytes());
         let _ = writer.write_all(b"\n");
     }
@@ -121,16 +134,33 @@ fn wait_for_gates(gates_dir: &Path, gates: &[String], poll_ms: u64) {
 }
 
 fn release_spool_to_stdout(path: &Path) {
-    let mut file = match std::fs::File::open(path) {
+    let file = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return,  // spool might be empty / absent — nothing to release
     };
     let stdout = io::stdout();
+    let stderr = io::stderr();
     let mut out = stdout.lock();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = match file.read(&mut buf) { Ok(0) => break, Ok(n) => n, Err(_) => break };
-        if out.write_all(&buf[..n]).is_err() { break; }
+    let mut stderr_lock = stderr.lock();
+
+    // Stream line-by-line so we can emit a `trace` (channel="data") event
+    // per envelope released — that's how the runner counts rows_out for
+    // this stage. Cheaper than reading whole file then re-splitting.
+    let reader = io::BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line { Ok(l) => l, Err(_) => break };
+        if line.trim().is_empty() { continue; }
+        if let Some(env) = combycode_dpe::envelope::parse_envelope(&line) {
+            let id  = env.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let src = env.get("src").and_then(|v| v.as_str()).unwrap_or("");
+            combycode_dpe::envelope::write_trace(
+                id, src,
+                &serde_json::Value::Object(serde_json::Map::new()),
+                Some("data"), &mut stderr_lock,
+            );
+        }
+        if out.write_all(line.as_bytes()).is_err() { break; }
+        if out.write_all(b"\n").is_err() { break; }
     }
     let _ = out.flush();
 }

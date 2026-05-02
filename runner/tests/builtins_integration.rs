@@ -1,6 +1,7 @@
 //! Integration tests for built-in route + filter processors.
 
 use std::collections::BTreeMap;
+use indexmap::IndexMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -53,6 +54,8 @@ fn ctx_for(dir: &std::path::Path) -> SessionContext {
         session_id: "test".into(),
         input: dir.join("in"), output: dir.join("out"),
         cache_mode: CacheMode::Use,
+        temp_override:    None,
+        storage_override: None,
     }
 }
 
@@ -75,7 +78,7 @@ async fn route_forwards_to_matching_channel() {
     let mut chan_a   = spawn(&tool, &json!({"tag":"A"}),  &ctx, "a",  0).unwrap();
     let mut chan_b   = spawn(&tool, &json!({"tag":"B"}),  &ctx, "b",  0).unwrap();
 
-    let mut routes = BTreeMap::new();
+    let mut routes = IndexMap::new();
     routes.insert("a".into(), "v.kind == 'apple'".into());
     routes.insert("b".into(), "v.kind == 'banana'".into());
 
@@ -125,10 +128,10 @@ async fn route_first_match_wins_on_overlapping_channels() {
     let mut pri = spawn(&tool, &json!({"tag":"P"}), &ctx, "p", 0).unwrap();
     let mut sec = spawn(&tool, &json!({"tag":"S"}), &ctx, "s", 0).unwrap();
 
-    // Both routes would match 'v.k > 0' for positive k, but map order controls
-    // evaluation via BTreeMap (sorted alphabetically by channel name).
-    // We use 'aaa' < 'bbb' to ensure `aaa` wins first.
-    let mut routes = BTreeMap::new();
+    // Both routes would match 'v.k > 0' for positive k. Per Bug #10 fix,
+    // route uses IndexMap → evaluation follows insertion order. We insert
+    // `aaa` first, so `aaa` wins on every match.
+    let mut routes = IndexMap::new();
     routes.insert("aaa".into(), "v.k > 0".into());
     routes.insert("bbb".into(), "v.k > 0".into());
 
@@ -160,14 +163,14 @@ async fn route_first_match_wins_on_overlapping_channels() {
 #[tokio::test]
 async fn route_compile_rejects_empty_channels() {
     let writers: BTreeMap<String, dpe::builtins::BuiltinWriter> = BTreeMap::new();
-    let routes = BTreeMap::new();
+    let routes: IndexMap<String, String> = IndexMap::new();
     let err = BuiltinRoute::compile("r", &routes, writers, OnError::Drop).unwrap_err();
     assert!(matches!(err, dpe::builtins::BuiltinError::NoChannels { .. }));
 }
 
 #[tokio::test]
 async fn route_compile_rejects_channel_without_writer() {
-    let mut routes = BTreeMap::new();
+    let mut routes = IndexMap::new();
     routes.insert("x".into(), "true".into());
     let writers: BTreeMap<String, dpe::builtins::BuiltinWriter> = BTreeMap::new();
     let err = BuiltinRoute::compile("r", &routes, writers, OnError::Drop).unwrap_err();
@@ -181,7 +184,7 @@ async fn route_compile_rejects_invalid_expression() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
     let mut w = spawn(&tool, &json!({}), &ctx, "d", 0).unwrap();
 
-    let mut routes = BTreeMap::new();
+    let mut routes = IndexMap::new();
     routes.insert("x".into(), "v.k >>  ".into());   // syntax error
     let mut writers: BTreeMap<String, dpe::builtins::BuiltinWriter> = BTreeMap::new();
     writers.insert("x".into(), Box::new(w.stdin.take().unwrap()));

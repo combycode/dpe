@@ -63,7 +63,9 @@ fn main() {
 
     let stdin = io::stdin();
     let stdout = io::stdout();
+    let stderr = io::stderr();
     let mut stdout_lock = stdout.lock();
+    let mut stderr_lock = stderr.lock();
 
     let mut count: u64 = 0;
     let mut last_id: Option<String> = None;
@@ -77,21 +79,36 @@ fn main() {
         };
         if line.trim().is_empty() { continue; }
 
+        // Parse the envelope first so we can emit input/trace events with
+        // accurate id/src — this tool is a pass-through but still needs
+        // to participate in the runner's per-stage stats (rows_in / rows_out).
+        let parsed = combycode_dpe::envelope::parse_envelope(&line);
+        let (env_id, env_src) = parsed.as_ref().map(|env| (
+            env.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            env.get("src").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        )).unwrap_or_default();
+
+        // Emit `input` event so the runner counts rows_in for this stage.
+        // (This tool runs its own stdin loop, not the framework runtime,
+        // so we have to emit the event manually.)
+        combycode_dpe::envelope::write_input(&env_id, &env_src, &mut stderr_lock);
+
         // Pass-through: write verbatim to stdout, reparse locally for id.
         let _ = stdout_lock.write_all(line.as_bytes());
         let _ = stdout_lock.write_all(b"\n");
         let _ = stdout_lock.flush();
 
-        count += 1;
-        if let Some(env) = combycode_dpe::envelope::parse_envelope(&line) {
-            if let Some(id) = env.get("id").and_then(|v| v.as_str()) {
-                last_id = Some(id.to_string());
-            }
-        }
+        // Emit `trace` event (channel:"data") so the runner counts rows_out
+        // — id/src match the envelope we just forwarded.
+        combycode_dpe::envelope::write_trace(
+            &env_id, &env_src, &serde_json::Value::Object(serde_json::Map::new()),
+            Some("data"), &mut stderr_lock,
+        );
 
-        // Emit a trace event per envelope so the runner's chain stays intact.
-        // (Skipped: pass-through doesn't mutate, and downstream's trace will
-        // carry the same id. Runner's trace already records each edge.)
+        count += 1;
+        if !env_id.is_empty() {
+            last_id = Some(env_id.clone());
+        }
 
         let reached = settings.expect_count.is_some_and(|n| count >= n);
         let time_elapsed = last_flush.elapsed() >= flush_interval;

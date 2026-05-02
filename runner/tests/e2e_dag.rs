@@ -69,6 +69,8 @@ fn ctx_for(tmp: &std::path::Path) -> SessionContext {
         session_id: dpe::env::new_session_id(),
         input, output,
         cache_mode: CacheMode::Use,
+        temp_override:    None,
+        storage_override: None,
     }
 }
 
@@ -301,6 +303,77 @@ stages:
 
     let ns: Vec<i64> = num_lines.iter().filter_map(|l| l["v"]["n"].as_i64()).collect();
     assert_eq!(ns, vec![75, 100]);
+}
+
+// ─── route declaration-order regression (Bug #10) ─────────────────────
+//
+// route channels MUST evaluate in YAML declaration order, not key-alphabetical.
+// Here `catch-all` is declared FIRST in YAML but lexically sorts BEFORE `txt`
+// (would have alphabetized to: catch-all, txt). With BTreeMap (the v2.0.0 bug)
+// the catch-all wins for every envelope and `txt` is unreachable. With IndexMap
+// the per-YAML order kicks in and the catch-all only sees what `txt` rejects.
+//
+// Equivalently: name a specific channel with a key that lexically sorts AFTER
+// the catch-all and ensure it still wins for matching envelopes.
+#[tokio::test]
+async fn dag_route_honors_declaration_order_not_alphabetical() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  router:
+    tool: route
+    routes:
+      txt:    "v.ext == 'txt'"
+      zfall:  "true"
+    input: src
+  txt-sink:
+    tool: mock-tool
+    settings: { tag: txt }
+    input: router.txt
+  zfall-sink:
+    tool: mock-tool
+    settings: { tag: zf }
+    input: router.zfall
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    // alpha.txt + delta.json + bravo.txt + charlie.md
+    let input = br#"{"t":"d","id":"1","src":"s","v":{"ext":"txt","name":"alpha"}}
+{"t":"d","id":"2","src":"s","v":{"ext":"json","name":"delta"}}
+{"t":"d","id":"3","src":"s","v":{"ext":"txt","name":"bravo"}}
+{"t":"d","id":"4","src":"s","v":{"ext":"md","name":"charlie"}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let txt = report.terminal_output.get("txt-sink").expect("txt sink output");
+    let zfall = report.terminal_output.get("zfall-sink").expect("zfall sink output");
+    let txt_lines = parse_lines(txt);
+    let zfall_lines = parse_lines(zfall);
+
+    // Specific channel matched the .txt envelopes — would be EMPTY under the
+    // old BTreeMap behavior because `txt` (lexically AFTER `zfall`) would
+    // never be tested first.
+    let txt_names: Vec<String> = txt_lines.iter()
+        .filter_map(|l| l["v"]["name"].as_str().map(String::from)).collect();
+    assert_eq!(txt_names, vec!["alpha", "bravo"],
+        "txt channel must catch its envelopes despite lexically sorting after zfall");
+
+    let zfall_names: Vec<String> = zfall_lines.iter()
+        .filter_map(|l| l["v"]["name"].as_str().map(String::from)).collect();
+    assert_eq!(zfall_names, vec!["delta", "charlie"],
+        "zfall (catch-all) gets only what txt didn't claim");
 }
 
 // ─── fan-in: two sibling $input leaves merge into one sink ────────────

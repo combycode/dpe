@@ -35,8 +35,10 @@ pub fn init(name: &str, out: &Path) -> Result<PathBuf, InitError> {
             .map_err(|e| InitError::Io(dir.clone(), e.to_string()))?;
     }
 
-    // Directory layout
-    for sub in &["tools", "configs", "variants", "data/input", "data/output"] {
+    // Directory layout. `storage/` is included so `$storage/...` paths in
+    // pipeline settings resolve on first run; `sessions/` and `temp/` are
+    // created on demand by the runner.
+    for sub in &["tools", "configs", "variants", "data/input", "data/output", "storage"] {
         std::fs::create_dir_all(dir.join(sub))
             .map_err(|e| InitError::Io(dir.join(sub), e.to_string()))?;
     }
@@ -46,6 +48,8 @@ pub fn init(name: &str, out: &Path) -> Result<PathBuf, InitError> {
         .map_err(|e| InitError::Io(dir.join("data/input/.gitkeep"), e.to_string()))?;
     std::fs::write(dir.join("data/output/.gitkeep"), "")
         .map_err(|e| InitError::Io(dir.join("data/output/.gitkeep"), e.to_string()))?;
+    std::fs::write(dir.join("storage/.gitkeep"), "")
+        .map_err(|e| InitError::Io(dir.join("storage/.gitkeep"), e.to_string()))?;
 
     // pipeline.toml
     let pipeline_toml = format!(
@@ -78,8 +82,11 @@ stages:
     std::fs::write(dir.join("variants/main.yaml"), main_yaml)
         .map_err(|e| InitError::Io(dir.join("variants/main.yaml"), e.to_string()))?;
 
-    // .gitignore — excludes runtime state
-    let gitignore = "sessions/\ntemp/\ndata/output/*\n!data/output/.gitkeep\n";
+    // .gitignore — excludes runtime state + editor-local state.
+    // `.dpe-editor/` holds per-pipeline editor configuration (last run
+    // settings per variant, eventually run history). It's machine- and
+    // user-specific; never check it in.
+    let gitignore = "sessions/\ntemp/\ndata/output/*\n!data/output/.gitkeep\n.dpe-editor/\n";
     std::fs::write(dir.join(".gitignore"), gitignore)
         .map_err(|e| InitError::Io(dir.join(".gitignore"), e.to_string()))?;
 
@@ -151,8 +158,14 @@ mod tests {
         assert!(dir.join(".gitignore").exists());
         assert!(dir.join("data/input/.gitkeep").exists());
         assert!(dir.join("data/output/.gitkeep").exists());
+        assert!(dir.join("storage/.gitkeep").exists());
+        assert!(dir.join("storage").is_dir());
         assert!(dir.join("tools").is_dir());
         assert!(dir.join("configs").is_dir());
+        // .gitignore excludes editor-local state.
+        let gitignore = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".dpe-editor/"),
+            "init must gitignore .dpe-editor/, got: {}", gitignore);
     }
 
     #[test] fn init_refuses_non_empty_dir() {

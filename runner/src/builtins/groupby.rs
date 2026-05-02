@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 
+use crate::stderr::StatsCollector;
 use crate::trace::{Src, TraceEvent, Tracer};
 
 use super::{compile_key_path, resolve_path, value_to_key_segment, BuiltinError, BuiltinWriter};
@@ -89,7 +90,20 @@ impl BuiltinGroupBy {
     pub fn spawn_task<R>(self, upstream: R) -> JoinHandle<io::Result<GroupByStats>>
     where R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(group_by_task(self, upstream))
+        tokio::spawn(group_by_task(self, upstream, None))
+    }
+
+    /// Spawn the group-by task with live counter updates pushed into the
+    /// shared `StatsCollector`. `rows_in` per data envelope received,
+    /// `rows_out` per emitted group envelope.
+    pub fn spawn_task_with_stats<R>(
+        self,
+        upstream: R,
+        stats: StatsCollector,
+    ) -> JoinHandle<io::Result<GroupByStats>>
+    where R: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(group_by_task(self, upstream, Some(stats)))
     }
 }
 
@@ -100,7 +114,11 @@ pub struct GroupByStats {
     pub partial_emitted: u64,
 }
 
-async fn group_by_task<R>(mut gb: BuiltinGroupBy, upstream: R) -> io::Result<GroupByStats>
+async fn group_by_task<R>(
+    mut gb: BuiltinGroupBy,
+    upstream: R,
+    stats_coll: Option<StatsCollector>,
+) -> io::Result<GroupByStats>
 where R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(upstream);
@@ -122,9 +140,11 @@ where R: AsyncRead + Unpin,
         if env.get("t").and_then(|v| v.as_str()) == Some("m") {
             gb.writer.write_all(trimmed.as_bytes()).await?;
             gb.writer.write_all(b"\n").await?;
+            if let Some(c) = &stats_coll { c.inc_meta(&gb.stage_id); }
             continue;
         }
         stats.rows_in += 1;
+        if let Some(c) = &stats_coll { c.inc_rows_in(&gb.stage_id); }
 
         let id = env.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let src = env.get("src").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -159,6 +179,7 @@ where R: AsyncRead + Unpin,
             emit_group(&mut gb.writer, &gb.tracer, &gb.stage_id,
                        &gb.target_path, &group_key, st, false).await?;
             stats.groups_emitted += 1;
+            if let Some(c) = &stats_coll { c.inc_rows_out(&gb.stage_id); }
         }
     }
 
@@ -170,6 +191,7 @@ where R: AsyncRead + Unpin,
                 emit_group(&mut gb.writer, &gb.tracer, &gb.stage_id,
                            &gb.target_path, &gk, st, true).await?;
                 stats.partial_emitted += 1;
+                if let Some(c) = &stats_coll { c.inc_rows_out(&gb.stage_id); }
             }
         }
     }

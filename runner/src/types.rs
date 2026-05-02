@@ -85,8 +85,12 @@ pub struct Stage {
     #[serde(default = "default_on_error")]
     pub on_error: OnError,
     // Built-in specific
+    // IndexMap (not BTreeMap) so YAML declaration order is preserved — route
+    // semantics are "first-truthy-channel wins, in declaration order" per
+    // docs/tools/builtins.md#route. BTreeMap alphabetizes and would silently
+    // make a catch-all named lexically below specific channels swallow everything.
     #[serde(default)]
-    pub routes: Option<BTreeMap<String, String>>,
+    pub routes: Option<indexmap::IndexMap<String, String>>,
     #[serde(default)]
     pub expression: Option<String>,
     #[serde(default)]

@@ -152,7 +152,7 @@ mod tests {
         }
     }
     fn stg_route(channels: &[(&str, &str)]) -> Stage {
-        let mut r = BTreeMap::new();
+        let mut r = indexmap::IndexMap::new();
         for (c, e) in channels { r.insert(c.to_string(), e.to_string()); }
         let mut s = stg("route", Some(Input::One("src".into())));
         s.routes = Some(r); s
@@ -169,7 +169,7 @@ mod tests {
             ("src", stg("srcTool", Some(Input::One("$input".into())))),
             ("r",   stg("route",   Some(Input::One("src".into())))),
         ]);
-        v.stages.get_mut("r").unwrap().routes = Some(BTreeMap::new());
+        v.stages.get_mut("r").unwrap().routes = Some(indexmap::IndexMap::new());
         let errs = validate(&v, tmp.path(), &RunnerConfig::default()).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::RouteWithoutChannels { .. })));
     }

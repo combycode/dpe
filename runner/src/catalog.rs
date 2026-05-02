@@ -62,7 +62,7 @@ impl Catalog {
     pub fn load(path: &Path) -> Result<Self, CatalogError> {
         let raw = std::fs::read_to_string(path)
             .map_err(|e| CatalogError::Io(path.to_path_buf(), e.to_string()))?;
-        let mut cat: Self = serde_json::from_str(&raw)
+        let mut cat: Self = serde_json::from_str(crate::bom::strip_bom(&raw))
             .map_err(|e| CatalogError::Parse(path.to_path_buf(), e.to_string()))?;
         // Tag every entry with its source file so `dpe tools list` can show
         // provenance later if we want.

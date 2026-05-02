@@ -1,6 +1,6 @@
 [package]
 name = "dpe"
-version = "2.0.0-rc1"
+version = "2.0.1"
 edition = "2021"
 description = "Data Processing Engine -- high-throughput streaming pipeline runner"
 license = "AGPL-3.0-or-later"
@@ -17,7 +17,15 @@ path = "src/main.rs"
 [dependencies]
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` makes serde_json::Map use IndexMap internally so JSON
+# round-trips (e.g. apply_stage_override → serialize/deep_merge/deserialize)
+# preserve declaration order. Required for route's `routes` field semantics.
+serde_json = { version = "1", features = ["preserve_order"] }
+# IndexMap: hashmap with insertion-order iteration. Used for route stage's
+# `routes` field so YAML declaration order is preserved through deserialization
+# (BTreeMap alphabetizes, breaking the documented "first-truthy-channel-wins"
+# semantics — see Bug #10 fix in v2.0.1).
+indexmap = { version = "2.14", features = ["serde"] }
 # YAML -- serde-saphyr in strict YAML 1.2 mode. The `strict_booleans` option
 # is required: without it the parser eats YAML 1.1 implicit booleans
 # (n/y/no/yes/on/off) as `bool`, silently corrupting string-valued tags.
@@ -47,6 +55,11 @@ ureq = "3.3.0"
 dirs = "6"
 thiserror = "2"
 anyhow = "1"
+
+# Regex pattern matching for `dpe log --search --regex`. Already pulled
+# in transitively elsewhere; declared explicit here so the import path
+# stays stable. Version pinned to whatever's already in the lock.
+regex = "1.12"
 
 # Cross-platform local sockets (named pipe on Windows, UDS on Unix).
 # NO TCP for runner<->CLI control; this is the only transport.

@@ -163,10 +163,15 @@ ENV DPE_CONFIG="/opt/dpe/bin/config.toml"
 
 # Workspace — where pipelines typically mount their data/configs
 RUN mkdir -p /workspace/in /workspace/out /workspace/temp /workspace/storage
-ENV DPE_INPUT=/workspace/in \
-    DPE_OUTPUT=/workspace/out \
-    DPE_TEMP=/workspace/temp \
-    DPE_STORAGE=/workspace/storage
+
+# NOTE (Bug #8 fix in v2.0.1): we intentionally do NOT bake DPE_INPUT /
+# DPE_OUTPUT / DPE_TEMP / DPE_STORAGE / DPE_CONFIGS env vars into the image.
+# Those values are computed per-session by the runner from `pipeline_dir`
+# (see runner/src/env.rs::SessionContext) and from CLI flags (`-i` / `-o`).
+# Image-level defaults conflict with per-pipeline path resolution and silently
+# divert tool writes to /workspace/* (which is rarely host-bound), causing data
+# loss on `docker compose run --rm`. Pipelines may still set these via compose
+# `environment:` if they need to override the runner's defaults.
 
 WORKDIR /workspace
 

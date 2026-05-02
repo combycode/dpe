@@ -1,6 +1,6 @@
 [package]
 name = "combycode-dpe-tool-writefile-hashed"
-version = "2.0.0-rc1"
+version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- append-only stream writer with hash-based deduplication"
 license = "AGPL-3.0-or-later"

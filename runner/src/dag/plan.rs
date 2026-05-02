@@ -82,7 +82,7 @@ pub enum PlannedKind {
 #[serde(tag = "builtin", rename_all = "snake_case")]
 pub enum BuiltinSpec {
     Route {
-        channels: BTreeMap<String, String>,
+        channels: indexmap::IndexMap<String, String>,
         on_error: OnError,
     },
     Filter {
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn route_stage_may_have_multiple_consumers() {
-        let mut routes = BTreeMap::new();
+        let mut routes = indexmap::IndexMap::new();
         routes.insert("pdf".into(), "true".into());
         routes.insert("xlsx".into(), "false".into());
         let mut route_stage = stg("route", Some(Input::One("src".into())));
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn compile_route_kind_carries_channels() {
         // Compile a route stage where the tool resolves to BuiltinKind::Route.
-        let mut routes = BTreeMap::new();
+        let mut routes = indexmap::IndexMap::new();
         routes.insert("pdf".into(), "v.t == 'pdf'".into());
         let mut route_stage = stg("route", Some(Input::One("$input".into())));
         route_stage.routes = Some(routes.clone());
@@ -477,6 +477,8 @@ mod tests {
             input:         "/in".into(),
             output:        "/out".into(),
             cache_mode:    CacheMode::Use,
+            temp_override:    None,
+            storage_override: None,
         };
         bind_session(&mut plan, &session).unwrap();
 

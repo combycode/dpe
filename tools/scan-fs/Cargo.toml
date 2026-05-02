@@ -1,6 +1,6 @@
 [package]
 name = "combycode-dpe-tool-scan-fs"
-version = "2.0.0-rc1"
+version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- filesystem scanner (full + diff modes), files/dirs/both, glob filters, content hashing"
 license = "AGPL-3.0-or-later"

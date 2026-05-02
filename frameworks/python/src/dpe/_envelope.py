@@ -94,9 +94,27 @@ def write_error(v, err, id: str, src: str):
     _write_stderr(record)
 
 
-def write_trace(id: str, src: str, labels: dict):
-    """Write merged trace event to stderr. Called by ctx before each output."""
-    _write_stderr({"type": "trace", "id": id, "src": src, "labels": labels})
+def write_trace(id: str, src: str, labels: dict, channel: str | None = None):
+    """Write merged trace event to stderr. Called by ctx before each output.
+
+    `channel` distinguishes counter buckets at the runner side:
+        - "data" from ctx.output  -> rows_out
+        - "meta" from ctx.meta    -> meta
+    None is written without a `channel` key (back-compat: runner treats
+    unset as data).
+    """
+    record: dict = {"type": "trace", "id": id, "src": src, "labels": labels}
+    if channel is not None:
+        record["channel"] = channel
+    _write_stderr(record)
+
+
+def write_input(id: str, src: str):
+    """Write input event to stderr. Emitted by the runtime per envelope read
+    from stdin, BEFORE the processor runs. Lets the runner count rows_in
+    for stages that never call ctx.output() (pass-through, terminal sinks).
+    """
+    _write_stderr({"type": "input", "id": id, "src": src})
 
 
 def write_stats(data: dict):

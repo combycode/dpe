@@ -56,7 +56,7 @@ pub(super) enum StageHandle {
 
 pub(super) struct RoutePending {
     stage_id: String,
-    routes: BTreeMap<String, String>, // channel → expression source
+    routes: indexmap::IndexMap<String, String>, // channel → expression source (ORDERED)
     on_error: crate::types::OnError,
     /// Consumer channel writers, collected as downstream stages register.
     channel_writers: BTreeMap<String, BuiltinWriter>,
@@ -90,8 +90,8 @@ pub(super) struct GroupByPending {
 // ═══ Entry point ═══════════════════════════════════════════════════════════
 
 /// Drive `plan` to completion. Inputs are fed from `input`, terminal-stage
-/// output goes to `output`. `tracer`, `stats`, `log_sink` and `logs_dir` are
-/// session-level resources owned by the caller.
+/// output goes to `output`. `tracer`, `stats`, `state`, `log_sink` and
+/// `logs_dir` are session-level resources owned by the caller.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute(
     plan: &ExecutionPlan,
@@ -102,6 +102,7 @@ pub(super) async fn execute(
     output: OutputSink,
     tracer: crate::trace::Tracer,
     stats_coll: crate::stderr::StatsCollector,
+    state_coll: crate::state::StateCollector,
     log_sink: crate::stderr::LogSink,
     logs_dir: &Path,
 ) -> Result<ExecutionResult, DagError> {
@@ -144,7 +145,8 @@ pub(super) async fn execute(
     for name in plan.topological_order.clone() {
         if let Some(handle) = handles.get_mut(&name) {
             launch_builtin_if_ready(name.clone(), handle, &mut wiring_tasks,
-                &session_dir, Some(tracer.clone()))?;
+                &session_dir, Some(tracer.clone()), Some(stats_coll.clone()),
+                Some(state_coll.clone()))?;
         }
     }
 
@@ -179,18 +181,37 @@ pub(super) async fn execute(
         }
     }
 
-    // 7. Graceful shutdown of spawned stages.
+    // 7. Graceful shutdown of spawned stages. Per-stage exit status is
+    //    folded into the StateCollector so the wire reflects truth — a
+    //    stage that exited 0 becomes Succeeded; non-zero / killed → Failed.
+    //    Builtins were already marked terminal inside launch_builtin_if_ready.
     let mut succeeded = 0u32;
     let mut failed = 0u32;
     let grace = config.spawn.effective_sigterm_grace_ms();
-    for (_name, handle) in handles {
+    for (name, handle) in handles {
+        let was_builtin = matches!(&handle,
+            StageHandle::Route(_) | StageHandle::Filter(_)
+            | StageHandle::Dedup(_) | StageHandle::GroupBy(_)
+        );
         let statuses = shutdown_handle(handle, grace).await;
-        for st in statuses {
+        let mut all_ok = true;
+        for st in &statuses {
             match st {
                 Ok(es) if es.success() => succeeded += 1,
-                Ok(_)  => failed += 1,
-                Err(_) => failed += 1,
+                Ok(_)  => { failed += 1; all_ok = false; }
+                Err(_) => { failed += 1; all_ok = false; }
             }
+        }
+        // Builtin tasks already recorded their own state inside
+        // launch_builtin_if_ready — don't overwrite. For spawned tools,
+        // shutdown is the only place we observe exit status.
+        if !was_builtin {
+            let outcome = if all_ok && !statuses.is_empty() {
+                crate::state::StageState::Succeeded
+            } else {
+                crate::state::StageState::Failed
+            };
+            state_coll.mark(&name, outcome);
         }
     }
 
@@ -623,16 +644,45 @@ fn launch_builtin_if_ready(
     tasks: &mut Vec<JoinHandle<Result<u64, std::io::Error>>>,
     session_dir: &std::path::Path,
     tracer: Option<crate::trace::Tracer>,
+    stats: Option<crate::stderr::StatsCollector>,
+    state: Option<crate::state::StateCollector>,
 ) -> Result<(), DagError> {
+    // Helper: wrap a builtin's JoinHandle so completion records terminal
+    // state. Live transitions (vs end-of-run reconciliation) — the editor
+    // sees route/filter/dedup/group-by flip to Succeeded/Failed the moment
+    // their upstream EOFs propagate through.
+    use crate::state::StageState;
+    fn finish<T: Send + 'static>(
+        join: JoinHandle<std::io::Result<T>>,
+        state: Option<crate::state::StateCollector>,
+        sid: String,
+    ) -> JoinHandle<Result<u64, std::io::Error>> {
+        tokio::spawn(async move {
+            let outcome = match join.await {
+                Ok(Ok(_stats)) => {
+                    if let Some(s) = &state { s.mark(&sid, StageState::Succeeded); }
+                    Ok(0)
+                }
+                Ok(Err(e)) => {
+                    if let Some(s) = &state { s.mark(&sid, StageState::Failed); }
+                    Err(e)
+                }
+                Err(e) => {
+                    if let Some(s) = &state { s.mark(&sid, StageState::Failed); }
+                    Err(std::io::Error::other(e.to_string()))
+                }
+            };
+            outcome
+        })
+    }
     match handle {
         StageHandle::Route(pending) => {
             if pending.upstream_reader.is_none() || pending.channel_writers.is_empty() {
                 return Ok(());
             }
-            // Move the pending state out so we can consume it.
             let r = std::mem::replace(pending, RoutePending {
                 stage_id: pending.stage_id.clone(),
-                routes: BTreeMap::new(),
+                routes: indexmap::IndexMap::new(),
                 on_error: pending.on_error,
                 channel_writers: BTreeMap::new(),
                 upstream_reader: None,
@@ -640,14 +690,11 @@ fn launch_builtin_if_ready(
             let route = BuiltinRoute::compile(&r.stage_id, &r.routes, r.channel_writers, r.on_error)
                 .map_err(|e| DagError::Stage { stage: name.clone(), reason: e.to_string() })?;
             let reader = r.upstream_reader.unwrap();
-            let task = route.spawn_task(reader);
-            tasks.push(tokio::spawn(async move {
-                match task.await {
-                    Ok(Ok(_stats)) => Ok(0),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(std::io::Error::other(e.to_string())),
-                }
-            }));
+            let task = match stats.clone() {
+                Some(s) => route.spawn_task_with_stats(reader, s),
+                None    => route.spawn_task(reader),
+            };
+            tasks.push(finish(task, state.clone(), name.clone()));
         }
         StageHandle::Filter(pending) => {
             if pending.upstream_reader.is_none() || pending.downstream_writer.is_none() {
@@ -666,14 +713,11 @@ fn launch_builtin_if_ready(
                 f.on_false, f.on_error)
                 .map_err(|e| DagError::Stage { stage: name.clone(), reason: e.to_string() })?;
             let reader = f.upstream_reader.unwrap();
-            let task = filter.spawn_task(reader);
-            tasks.push(tokio::spawn(async move {
-                match task.await {
-                    Ok(Ok(_stats)) => Ok(0),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(std::io::Error::other(e.to_string())),
-                }
-            }));
+            let task = match stats.clone() {
+                Some(s) => filter.spawn_task_with_stats(reader, s),
+                None    => filter.spawn_task(reader),
+            };
+            tasks.push(finish(task, state.clone(), name.clone()));
         }
         StageHandle::Dedup(pending) => {
             if pending.upstream_reader.is_none() || pending.downstream_writer.is_none() {
@@ -691,14 +735,11 @@ fn launch_builtin_if_ready(
                 tracer.clone(), load_existing)
                 .map_err(|e| DagError::Stage { stage: name.clone(), reason: e.to_string() })?;
             let reader = d.upstream_reader.unwrap();
-            let task = dedup.spawn_task(reader);
-            tasks.push(tokio::spawn(async move {
-                match task.await {
-                    Ok(Ok(_stats)) => Ok(0),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(std::io::Error::other(e.to_string())),
-                }
-            }));
+            let task = match stats.clone() {
+                Some(s) => dedup.spawn_task_with_stats(reader, s),
+                None    => dedup.spawn_task(reader),
+            };
+            tasks.push(finish(task, state.clone(), name.clone()));
         }
         StageHandle::GroupBy(pending) => {
             if pending.upstream_reader.is_none() || pending.downstream_writer.is_none() {
@@ -714,14 +755,11 @@ fn launch_builtin_if_ready(
             let gb = BuiltinGroupBy::compile(&g.stage_id, &g.cfg, writer, tracer.clone())
                 .map_err(|e| DagError::Stage { stage: name.clone(), reason: e.to_string() })?;
             let reader = g.upstream_reader.unwrap();
-            let task = gb.spawn_task(reader);
-            tasks.push(tokio::spawn(async move {
-                match task.await {
-                    Ok(Ok(_stats)) => Ok(0),
-                    Ok(Err(e)) => Err(e),
-                    Err(e) => Err(std::io::Error::other(e.to_string())),
-                }
-            }));
+            let task = match stats.clone() {
+                Some(s) => gb.spawn_task_with_stats(reader, s),
+                None    => gb.spawn_task(reader),
+            };
+            tasks.push(finish(task, state.clone(), name.clone()));
         }
         _ => {}
     }

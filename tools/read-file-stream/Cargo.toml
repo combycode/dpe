@@ -1,6 +1,6 @@
 [package]
 name = "combycode-dpe-tool-readfile"
-version = "2.0.0-rc1"
+version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- stream rows from text files (NDJSON / lines / CSV)"
 license = "AGPL-3.0-or-later"

@@ -8,6 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::task::JoinHandle;
 
 use crate::expr::{compile, evaluate, Expr};
+use crate::stderr::StatsCollector;
 use crate::types::{FilterOnFalse, OnError};
 
 use super::{build_scope, is_truthy, BuiltinError, BuiltinWriter};
@@ -47,7 +48,20 @@ impl BuiltinFilter {
     pub fn spawn_task<R>(self, upstream: R) -> JoinHandle<io::Result<FilterStats>>
     where R: AsyncRead + Unpin + Send + 'static,
     {
-        tokio::spawn(filter_task(self, upstream))
+        tokio::spawn(filter_task(self, upstream, None))
+    }
+
+    /// Spawn the filter task with live counter updates pushed into the
+    /// shared `StatsCollector`. `rows_in` per upstream line, `rows_out`
+    /// per envelope passed to the downstream writer.
+    pub fn spawn_task_with_stats<R>(
+        self,
+        upstream: R,
+        stats: StatsCollector,
+    ) -> JoinHandle<io::Result<FilterStats>>
+    where R: AsyncRead + Unpin + Send + 'static,
+    {
+        tokio::spawn(filter_task(self, upstream, Some(stats)))
     }
 }
 
@@ -59,7 +73,11 @@ pub struct FilterStats {
     pub rows_errored: u64,
 }
 
-async fn filter_task<R>(mut filter: BuiltinFilter, upstream: R) -> io::Result<FilterStats>
+async fn filter_task<R>(
+    mut filter: BuiltinFilter,
+    upstream: R,
+    stats_coll: Option<StatsCollector>,
+) -> io::Result<FilterStats>
 where R: AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(upstream);
@@ -72,11 +90,13 @@ where R: AsyncRead + Unpin,
         if n == 0 { break; }
         if line.trim().is_empty() { continue; }
         stats.rows_in += 1;
+        if let Some(c) = &stats_coll { c.inc_rows_in(&filter.stage_id); }
 
         let env: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => {
                 stats.rows_errored += 1;
+                if let Some(c) = &stats_coll { c.inc_errors(&filter.stage_id); }
                 if matches!(filter.on_error, OnError::Fail) {
                     return Err(io::Error::new(io::ErrorKind::InvalidData,
                         "filter: invalid envelope JSON"));
@@ -90,6 +110,7 @@ where R: AsyncRead + Unpin,
             Ok(v) => is_truthy(&v),
             Err(_) => {
                 stats.rows_errored += 1;
+                if let Some(c) = &stats_coll { c.inc_errors(&filter.stage_id); }
                 match filter.on_error {
                     OnError::Drop => false,
                     OnError::Pass => true,
@@ -102,6 +123,7 @@ where R: AsyncRead + Unpin,
         if keep {
             filter.writer.write_all(line.as_bytes()).await?;
             stats.rows_passed += 1;
+            if let Some(c) = &stats_coll { c.inc_rows_out(&filter.stage_id); }
         } else {
             stats.rows_dropped += 1;
             // on_false: drop (default) → nothing more to do
