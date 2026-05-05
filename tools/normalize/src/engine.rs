@@ -85,10 +85,38 @@ pub enum CompiledOp {
 
 impl Engine {
     pub fn load(settings: &ToolSettings) -> Result<Self> {
-        let rb = read_rulebook(Path::new(&settings.rulebook))
-            .with_context(|| format!("load rulebook {}", &settings.rulebook))?;
-        let base = Path::new(&settings.rulebook).parent().map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
+        use crate::settings::RulebookSource;
+        let source = settings.rulebook_source().map_err(|e| anyhow!(e))?;
+
+        // Resolve to a parsed Rulebook + a base directory for `use:`
+        // file references inside profiles. Inline forms can't reference
+        // files relative to themselves — they use the current process
+        // cwd as the base, which is the tool dir. In practice inline
+        // rulebooks rarely use `use:` so the base rarely matters.
+        let (rb, base) = match source {
+            RulebookSource::File(path) => {
+                let rb = read_rulebook(Path::new(path))
+                    .with_context(|| format!("load rulebook {}", path))?;
+                let base = Path::new(path).parent().map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                (rb, base)
+            }
+            RulebookSource::InlineRules(rules_val) => {
+                // Synthesise a single always-on profile from the inline
+                // rules array. Wrap as a JSON object that the existing
+                // Rulebook deserializer accepts (top-level `rules:`).
+                let synth = serde_json::json!({ "rules": rules_val });
+                let rb: Rulebook = serde_json::from_value(synth)
+                    .with_context(|| "parse inline rules: array")?;
+                (rb, PathBuf::from("."))
+            }
+            RulebookSource::InlineProfiles(profiles_val) => {
+                let synth = serde_json::json!({ "profiles": profiles_val });
+                let rb: Rulebook = serde_json::from_value(synth)
+                    .with_context(|| "parse inline profiles: array")?;
+                (rb, PathBuf::from("."))
+            }
+        };
         let default_on_error = settings.on_error;
 
         let mut profiles = Vec::with_capacity(rb.profiles.len());
@@ -495,6 +523,26 @@ fn compile_op(spec: OpSpec) -> Result<CompiledOp> {
         S::Require { fields } => CompiledOp::Require(fields),
         S::UnwrapFormulas => CompiledOp::UnwrapFormulas,
         S::Template { template, from, target } => {
+            // Reject `${...}` patterns in templates. Two languages
+            // collide on `$`: variant-level env interp uses `${VAR}`,
+            // template ops use `{name}` placeholders. A user writing
+            // `${BATCH}` thinking it's an env var gets the `{BATCH}`
+            // looked up against `from:` — usually empty, silently
+            // rendering as `$`. Loud-fail with a hint pointing at
+            // the right pattern.
+            if let Some(pos) = template.find("${") {
+                return Err(anyhow!(
+                    "template '{}': literal `${{` at position {} — \
+                     `${{VAR}}` env interpolation does NOT apply inside rulebook \
+                     templates loaded from a file. Either:\n\
+                     \x20 (1) move the rules INLINE in variant settings (env interp \
+                     applies there: `settings.rules: [...]`), OR\n\
+                     \x20 (2) use `{{name}}` placeholder syntax with `from:` map \
+                     (substitutes from envelope paths), OR\n\
+                     \x20 (3) escape: `\\${{VAR}}` if you really meant the literal text.",
+                    template, pos,
+                ));
+            }
             let t = pathmod::parse(&target)
                 .map_err(|e| anyhow!("template target '{}': {}", target, e))?;
             let mut froms = Vec::with_capacity(from.len());
@@ -531,7 +579,9 @@ mod tests {
             ]
         }"#);
         let s = ToolSettings {
-            rulebook: p.to_string_lossy().into_owned(),
+            rulebook: Some(p.to_string_lossy().into_owned()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::Passthrough,
             on_error: OnError::Trace,
         };
@@ -546,7 +596,9 @@ mod tests {
         let p = write_file(tmp.path(), "rb.yaml",
             "rules:\n  - op: trim\n    path: v.name\n");
         let s = ToolSettings {
-            rulebook: p.to_string_lossy().into_owned(),
+            rulebook: Some(p.to_string_lossy().into_owned()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::Passthrough,
             on_error: OnError::Trace,
         };
@@ -563,7 +615,9 @@ mod tests {
             "profiles:\n  - when: v.kind == 'a'\n    use: {}\n  - rules: [{{op: slugify, path: v.x}}]\n",
             inner.file_name().unwrap().to_string_lossy()));
         let s = ToolSettings {
-            rulebook: outer.to_string_lossy().into_owned(),
+            rulebook: Some(outer.to_string_lossy().into_owned()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::Passthrough,
             on_error: OnError::Trace,
         };
@@ -580,7 +634,9 @@ mod tests {
             "rules":[{"op":"trim","path":"v..bad"}]
         }"#);
         let s = ToolSettings {
-            rulebook: p.to_string_lossy().into_owned(),
+            rulebook: Some(p.to_string_lossy().into_owned()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::default(),
             on_error: OnError::default(),
         };
@@ -594,7 +650,9 @@ mod tests {
             "rules":[{"op":"dict","map":{"/[bad/":"x"}}]
         }"#);
         let s = ToolSettings {
-            rulebook: p.to_string_lossy().into_owned(),
+            rulebook: Some(p.to_string_lossy().into_owned()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::default(),
             on_error: OnError::default(),
         };
@@ -604,10 +662,80 @@ mod tests {
     #[test]
     fn missing_rulebook_file_errors() {
         let s = ToolSettings {
-            rulebook: "/does/not/exist.yaml".into(),
+            rulebook: Some("/does/not/exist.yaml".into()),
+            rules: None,
+            profiles: None,
             on_unmatched: OnUnmatched::default(),
             on_error: OnError::default(),
         };
         assert!(Engine::load(&s).is_err());
+    }
+
+    // ─── inline rules / profiles + ${...} hardening (regression: 0010) ──
+
+    #[test]
+    fn load_inline_rules_synthesizes_profile() {
+        // Inline rules in settings → no file read, single always-on
+        // profile synthesized.
+        let s = ToolSettings {
+            rulebook: None,
+            rules: Some(serde_json::json!([
+                {"op": "case", "to": "upper", "path": "v.name"}
+            ])),
+            profiles: None,
+            on_unmatched: OnUnmatched::Passthrough,
+            on_error: OnError::Trace,
+        };
+        let eng = Engine::load(&s).expect("inline rules should load");
+        assert_eq!(eng.profiles.len(), 1);
+        assert_eq!(eng.profiles[0].rules.len(), 1);
+    }
+
+    #[test]
+    fn load_inline_profiles_preserves_dispatch() {
+        // Inline profiles array → uses `when:` dispatch as documented.
+        let s = ToolSettings {
+            rulebook: None,
+            rules: None,
+            profiles: Some(serde_json::json!([
+                {"when": "v.kind == 'a'", "rules": [
+                    {"op": "case", "to": "upper", "path": "v.name"}
+                ]},
+                {"rules": [
+                    {"op": "case", "to": "lower", "path": "v.name"}
+                ]}
+            ])),
+            on_unmatched: OnUnmatched::Passthrough,
+            on_error: OnError::Trace,
+        };
+        let eng = Engine::load(&s).expect("inline profiles should load");
+        assert_eq!(eng.profiles.len(), 2);
+        assert!(eng.profiles[0].when.is_some(),  "first profile has when:");
+        assert!(eng.profiles[1].when.is_none(),  "second is the catch-all");
+    }
+
+    #[test]
+    fn template_rejects_dollar_brace_pattern() {
+        // `${BATCH}` in a template silently rendered as `$` (literal $
+        // + empty {BATCH} placeholder lookup) before the hardening.
+        // Now compile-time error pointing at the right pattern.
+        let s = ToolSettings {
+            rulebook: None,
+            rules: Some(serde_json::json!([
+                {"op": "template",
+                 "template": "$temp/batch_${BATCH}/raw/{hash}/",
+                 "from": {"hash": "v.hash"},
+                 "target": "v.output"}
+            ])),
+            profiles: None,
+            on_unmatched: OnUnmatched::Passthrough,
+            on_error: OnError::Trace,
+        };
+        let err = Engine::load(&s).err().expect("compile must fail on ${...} template");
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("${"),
+            "error must echo the offending pattern: {}", msg);
+        assert!(msg.contains("env interpolation does NOT apply"),
+            "error must explain the env-vs-template distinction: {}", msg);
     }
 }

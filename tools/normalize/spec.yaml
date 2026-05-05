@@ -8,8 +8,25 @@ settings:
   properties:
     rulebook:
       type: string
-      required: true
-      description: "Path to a YAML/JSON rulebook (flat rules OR per-profile rules)"
+      description: |
+        Path to a YAML/JSON rulebook (flat rules OR per-profile rules).
+        Mutually exclusive with `rules:` and `profiles:` — set EXACTLY one.
+    rules:
+      type: array
+      description: |
+        Inline rules — alternative to `rulebook:`. Equivalent to a rulebook
+        with one always-on profile. Use this when you need settings-level
+        `${VAR}` env interpolation or `$prefix` path substitution INSIDE
+        rule strings (those apply to settings, NOT to external rulebook
+        files loaded fresh from disk).
+      items: { type: object }
+    profiles:
+      type: array
+      description: |
+        Inline profiles — alternative to `rulebook:`. Same motivation as
+        `rules:`; for when you need multiple profiles dispatched by
+        `when:` expression.
+      items: { type: object }
     on_unmatched:
       type: string
       enum: ["passthrough", "drop", "error"]
@@ -27,8 +44,14 @@ input:
 output:
   description: "Envelope with rules applied to `v`. Specific shape depends on the rulebook."
 
-# Rulebook grammar (separate file referenced by settings.rulebook):
+# Rulebook grammar (whether external file via `rulebook:` or inline via
+# `rules:` / `profiles:`):
 #   - Flat form:    rules: [<op>, <op>, ...]
 #   - Profile form: profiles: { <name>: { match: ..., rules: [...] }, ... }
 #   - Ops:  dict | parse | rename | compute | template | require | shape
 #   See docs/tools/normalize.md for the full grammar.
+#
+# `template` op — `{name}` placeholder syntax substitutes from the `from:`
+# map. The `${VAR}` syntax (settings-level env interp) is REJECTED inside
+# templates with a loud error; use inline `rules:` settings if you need
+# env interpolation INSIDE the template, or `\${VAR}` to escape.
