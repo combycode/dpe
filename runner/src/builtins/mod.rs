@@ -19,11 +19,15 @@ mod dedup;
 mod filter;
 mod groupby;
 mod route;
+mod spread;
+mod toggle;
 
 pub use dedup::{BuiltinDedup, DedupStats};
 pub use filter::{BuiltinFilter, FilterStats};
 pub use groupby::{BuiltinGroupBy, GroupByStats};
 pub use route::{BuiltinRoute, RouteStats};
+pub use spread::{BuiltinSpread, SpreadStats};
+pub use toggle::{BuiltinToggle, ToggleAction, ToggleCfg, ToggleCfgError, ToggleMode, ToggleStats, decide_action, parse_cfg as parse_toggle_cfg};
 
 /// Trait-object writer accepted by builtins. Can be a `ChildStdin`, a
 /// `tokio::io::duplex` write half, or any other `AsyncWrite`.
@@ -45,6 +49,10 @@ pub enum BuiltinError {
     MissingChannel { stage: String, channel: String },
     #[error("dedup '{stage}': failed to load index — {reason}")]
     DedupIndexLoad { stage: String, reason: String },
+    #[error("spread '{stage}' has no downstream consumers — at least one stage must reference it as `input:`")]
+    SpreadNoConsumers { stage: String },
+    #[error("toggle '{stage}': {reason}")]
+    ToggleSettings { stage: String, reason: String },
 }
 
 // ═══ Helpers ══════════════════════════════════════════════════════════════

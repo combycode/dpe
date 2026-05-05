@@ -85,10 +85,25 @@ pub enum InputSource {
 /// Where terminal stages' output goes.
 #[derive(Debug, Clone)]
 pub enum OutputSink {
-    /// Accumulate in memory; returned via `DagReport.terminal_output`.
+    /// Drop terminal stdout on the floor — no buffering, no disk write.
+    /// Default for `dpe run`. Tools that want to deliver output write
+    /// their own files via settings (e.g. write-file-stream's
+    /// `default_file`).
+    Discard,
+    /// Buffer terminal stdout into [`DagReport::terminal_output`].
+    /// Programmatic-only — used by integration tests and library
+    /// callers that need to inspect what each terminal emitted. Holds
+    /// bytes in RAM, not exposed via CLI.
     Memory,
-    /// Append each terminal stage's output to `<dir>/<stage>.ndjson`.
-    Directory(std::path::PathBuf),
+    /// Write each terminal stage's stdout to `<dir>/<stage>.ndjson`.
+    /// Driven by `dpe run --debug-capture[=stage1,stage2]` — runner
+    /// sets `dir` to `<session>/debug/`. When `stages` is `None` every
+    /// terminal is captured; when `Some(set)` only the listed stage
+    /// IDs are written (others dropped on the floor).
+    DebugDir {
+        dir: std::path::PathBuf,
+        stages: Option<std::collections::HashSet<String>>,
+    },
 }
 
 // ═══ Report ════════════════════════════════════════════════════════════════

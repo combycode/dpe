@@ -40,6 +40,12 @@ enum Command {
         /// they are only resolved at run time.
         #[arg(long)]
         plan: bool,
+        /// Treat unset `${VAR}` references as empty string instead of
+        /// erroring at validation. Used by editor-time validation where
+        /// the runtime env isn't known yet. `dpe run` always requires
+        /// every referenced env var to be set.
+        #[arg(long)]
+        allow_undefined_env: bool,
     },
     /// Run a pipeline variant
     Run {
@@ -96,6 +102,17 @@ enum Command {
         /// Without the flag, no stats lines are emitted. Added in v2.0.1.
         #[arg(long, value_name = "MS", num_args = 0..=1, default_missing_value = "500")]
         stats: Option<u64>,
+        /// Capture each terminal stage's stdout to `<session>/debug/<stage>.ndjson`.
+        ///   --debug-capture                    — all terminals
+        ///   --debug-capture stage1,stage2      — only the listed stages
+        /// Without the flag, terminal stdout is silently discarded
+        /// (default). Useful when a stage emits envelopes you forgot to
+        /// route — captured files let you inspect what flowed past.
+        /// Tools that write their own files (write-file-stream,
+        /// mongo-upsert, etc.) don't need this — their output goes
+        /// where their settings say. Added in v2.0.1.
+        #[arg(long, value_name = "STAGES", num_args = 0..=1, default_missing_value = "")]
+        debug_capture: Option<String>,
     },
     /// Rebuild journal.json for a session by scanning artefacts on disk.
     /// Use after an abnormal termination (kill, crash) where the runner
@@ -229,11 +246,12 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Init { name, out } => cmd_init(&name, &out),
-        Command::Check { target, all, plan } => cmd_check(target, all, plan, &cfg),
+        Command::Check { target, all, plan, allow_undefined_env } =>
+            cmd_check(target, all, plan, allow_undefined_env, &cfg),
         Command::Run {
             target, input, output, clear: _, cache,
-            temp_dir, storage_dir, seed, seed_file, json, stats,
-        } => cmd_run(target, input, output, cache, temp_dir, storage_dir, seed, seed_file, json, stats, &cfg),
+            temp_dir, storage_dir, seed, seed_file, json, stats, debug_capture,
+        } => cmd_run(target, input, output, cache, temp_dir, storage_dir, seed, seed_file, json, stats, debug_capture, &cfg),
         Command::Journal { session } => cmd_journal(session),
         Command::Status { session }   => cmd_status(session),
         Command::Progress { session } => cmd_progress(session),
@@ -666,9 +684,20 @@ fn cmd_run(
     seed_file: Option<PathBuf>,
     json: bool,
     stats_poll_ms: Option<u64>,
+    debug_capture: Option<String>,
     cfg: &dpe::RunnerConfig,
 ) -> anyhow::Result<()> {
     use dpe::types::CacheMode;
+
+    // Reject CLI args that start with `$` — they are almost certainly
+    // a misused DPE path-prefix. Path prefixes (`$temp`, `$storage`,
+    // ...) substitute INSIDE settings strings only; on the CLI they
+    // arrive as literal text. A literal `$temp` then cascades into
+    // DPE_TEMP/DPE_STORAGE for spawned tools, downstream tools resolve
+    // it as a relative path against their own CWD, and extracted
+    // files land in completely wrong places. Loud reject + hint.
+    reject_prefix_arg("--temp-dir", temp_dir.as_deref())?;
+    reject_prefix_arg("--storage-dir", storage_dir.as_deref())?;
 
     let (pipeline_path, variant_name) = parse_target(&target)?;
     let (pipeline_dir, pipeline_name) = resolve_pipeline_dir_and_name(&pipeline_path)?;
@@ -848,13 +877,41 @@ fn cmd_run(
             })
         });
 
+        // Default: silently discard terminal stages' stdout. Tools that
+        // need to deliver output write their own files via settings.
+        // `--debug-capture[=stage1,stage2]` opts into writing those
+        // streams to `<session>/debug/<stage>.ndjson` for inspection
+        // when a stage emits envelopes that aren't otherwise consumed.
+        let output_sink = match debug_capture.as_deref() {
+            None => dpe::dag::OutputSink::Discard,
+            Some("") => dpe::dag::OutputSink::DebugDir {
+                dir: ctx.session_dir().join("debug"),
+                stages: None,
+            },
+            Some(list) => {
+                let stages: std::collections::HashSet<String> = list
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                dpe::dag::OutputSink::DebugDir {
+                    dir: ctx.session_dir().join("debug"),
+                    stages: if stages.is_empty() { None } else { Some(stages) },
+                }
+            }
+        };
+        // `output` PathBuf is intentionally NOT consumed here — it stays
+        // wired into SessionContext above so tools resolve `$output/...`
+        // to the user-supplied dir for their own writes.
+        let _ = &output;
+
         let report = dpe::dag::run_variant_with_stats(
             &resolved,
             &pipeline_dir,
             &ctx,
             cfg,
             input_source,
-            dpe::dag::OutputSink::Directory(output),
+            output_sink,
             Some(stats_coll.clone()),
             Some(state_coll.clone()),
         ).await;
@@ -1063,7 +1120,13 @@ fn wrap_seed_line(
     Ok(out)
 }
 
-fn cmd_check(target: String, all: bool, plan: bool, _cfg: &dpe::RunnerConfig) -> anyhow::Result<()> {
+fn cmd_check(
+    target: String,
+    all: bool,
+    plan: bool,
+    allow_undefined_env: bool,
+    cfg: &dpe::RunnerConfig,
+) -> anyhow::Result<()> {
     let (pipeline_path, variant_name) = parse_target(&target)?;
     let (resolved_dir, pipeline_name) = resolve_pipeline_dir_and_name(&pipeline_path)?;
     let pipeline_dir = resolved_dir.as_path();
@@ -1072,17 +1135,32 @@ fn cmd_check(target: String, all: bool, plan: bool, _cfg: &dpe::RunnerConfig) ->
         if plan {
             anyhow::bail!("--plan and --all are mutually exclusive; pick one variant");
         }
-        check_all_variants(pipeline_dir, &pipeline_name)
+        check_all_variants(pipeline_dir, &pipeline_name, allow_undefined_env, cfg)
     } else {
-        check_one(pipeline_dir, &pipeline_name, &variant_name, plan)
+        check_one(pipeline_dir, &pipeline_name, &variant_name, plan, allow_undefined_env, cfg)
     }
 }
 
-fn check_one(dir: &std::path::Path, pipeline: &str, variant: &str, print_plan: bool) -> anyhow::Result<()> {
-    let resolved = dpe::load_variant(dir, pipeline, variant)?;
-    let cfg = dpe::load_config(None)?;
+fn env_for_check(allow_undefined_env: bool) -> Box<dyn dpe::env_interp::EnvLookup> {
+    if allow_undefined_env {
+        Box::new(dpe::env_interp::AllowUndefinedEnv)
+    } else {
+        Box::new(dpe::env_interp::ProcessEnv)
+    }
+}
 
-    match dpe::validate::validate(&resolved, dir, &cfg) {
+fn check_one(
+    dir: &std::path::Path,
+    pipeline: &str,
+    variant: &str,
+    print_plan: bool,
+    allow_undefined_env: bool,
+    cfg: &dpe::RunnerConfig,
+) -> anyhow::Result<()> {
+    let resolved = dpe::load_variant(dir, pipeline, variant)?;
+    let env = env_for_check(allow_undefined_env);
+
+    match dpe::validate::validate_with_env(&resolved, dir, cfg, env.as_ref()) {
         Ok(()) => {
             // With --plan, stdout is the JSON plan and nothing else — so
             // `dpe check :v --plan | jq` just works. Without --plan we keep
@@ -1091,7 +1169,7 @@ fn check_one(dir: &std::path::Path, pipeline: &str, variant: &str, print_plan: b
             if print_plan {
                 eprintln!("[OK] {}:{} — {} stage(s) resolved + validated",
                     pipeline, variant, resolved.stages.len());
-                print_execution_plan(&resolved, dir, &cfg)?;
+                print_execution_plan(&resolved, dir, cfg, env.as_ref())?;
             } else {
                 println!("[OK] {}:{} — {} stage(s) resolved + validated",
                     pipeline, variant, resolved.stages.len());
@@ -1112,16 +1190,22 @@ fn print_execution_plan(
     resolved:     &dpe::ResolvedVariant,
     pipeline_dir: &std::path::Path,
     cfg:          &dpe::RunnerConfig,
+    env:          &dyn dpe::env_interp::EnvLookup,
 ) -> anyhow::Result<()> {
     let static_resolver = dpe::paths::PathResolver::default();
-    let plan = dpe::dag::plan::compile(resolved, pipeline_dir, cfg, &static_resolver)
+    let plan = dpe::dag::plan::compile_with_env(resolved, pipeline_dir, cfg, &static_resolver, env)
         .map_err(|e| anyhow::anyhow!("plan compile: {}", e))?;
     let json = serde_json::to_string_pretty(&plan)?;
     println!("{}", json);
     Ok(())
 }
 
-fn check_all_variants(dir: &std::path::Path, pipeline: &str) -> anyhow::Result<()> {
+fn check_all_variants(
+    dir: &std::path::Path,
+    pipeline: &str,
+    allow_undefined_env: bool,
+    cfg: &dpe::RunnerConfig,
+) -> anyhow::Result<()> {
     let variants_dir = dir.join("variants");
     if !variants_dir.exists() {
         anyhow::bail!("variants directory not found: {}", variants_dir.display());
@@ -1133,7 +1217,7 @@ fn check_all_variants(dir: &std::path::Path, pipeline: &str) -> anyhow::Result<(
         let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
         if !["yaml", "yml", "json"].contains(&ext) { continue; }
         let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-        match check_one(dir, pipeline, &name, false) {
+        match check_one(dir, pipeline, &name, false, allow_undefined_env, cfg) {
             Ok(()) => checked += 1,
             Err(e) => { errors.push(format!("{}: {}", name, e)); }
         }
@@ -1160,7 +1244,14 @@ fn check_all_variants(dir: &std::path::Path, pipeline: &str) -> anyhow::Result<(
 /// a sensible message.
 fn resolve_pipeline_dir_and_name(pipeline_path: &str) -> anyhow::Result<(PathBuf, String)> {
     let raw = PathBuf::from(pipeline_path);
-    let canonical = std::fs::canonicalize(&raw).unwrap_or_else(|_| raw.clone());
+    // Strip the `\\?\` UNC prefix that std::fs::canonicalize introduces
+    // on Windows. Without this strip, the prefix cascades through
+    // PathResolver into every settings path the tool sees — e.g.
+    // classify's `$configs/.../rules.js` arrives as `\\?\D:\...js`,
+    // and Bun/Node `import()` chokes on that prefix. See inbox 0005.
+    let canonical = strip_unc_prefix(
+        std::fs::canonicalize(&raw).unwrap_or_else(|_| raw.clone()),
+    );
     let name = canonical
         .file_name()
         .and_then(|n| n.to_str())
@@ -1187,6 +1278,143 @@ fn cmd_install(cfg: &dpe::RunnerConfig, name: &str, force: bool) -> anyhow::Resu
     Ok(())
 }
 
+/// One entry in the tool listing. Tier values:
+///   - `standard` — from a catalog entry that didn't override tier.
+///   - `pipeline-local` — discovered under a `tools_paths` entry whose
+///     parent directory contains `pipeline.toml`.
+///   - `external` — discovered under any other `tools_paths` entry.
+struct ToolListEntry {
+    name:               String,
+    tier:               String,
+    runtime:            String,
+    version:            Option<String>,
+    description:        Option<String>,
+    source:             Option<String>,
+    installed:          bool,
+    settings_schema:    Option<serde_json::Value>,
+    output_description: Option<String>,
+}
+
+struct BuiltinEntry {
+    name:        &'static str,
+    description: &'static str,
+}
+
+/// The complete set of in-process builtins recognised by the runner.
+/// Kept sorted by frequency-of-use, not alphabetical, so the most
+/// common ones are top-of-list in the text output.
+const BUILTINS: &[BuiltinEntry] = &[
+    BuiltinEntry { name: "route",
+        description: "Fan envelopes out to named channels by expression — first-truthy-wins" },
+    BuiltinEntry { name: "spread",
+        description: "Broadcast every envelope to ALL downstream consumers (1→N tee)" },
+    BuiltinEntry { name: "filter",
+        description: "Drop or divert envelopes that fail a boolean expression" },
+    BuiltinEntry { name: "dedup",
+        description: "Drop envelopes whose key has been seen before (persistent index)" },
+    BuiltinEntry { name: "group_by",
+        description: "Group envelopes by key and emit aggregates on trigger" },
+    BuiltinEntry { name: "toggle",
+        description: "Env-gated 1→1 passthrough; pass-all or drop-all per env match" },
+];
+
+/// Tier detection for a discovered tool directory: a tools_path whose
+/// parent contains `pipeline.toml` is "pipeline-local"; otherwise
+/// "external". Catalog entries override via their own `tier` field.
+fn tier_for_discovered_path(tools_path: &std::path::Path) -> &'static str {
+    let parent = tools_path.parent();
+    if parent.map(|p| p.join("pipeline.toml").is_file()).unwrap_or(false) {
+        "pipeline-local"
+    } else {
+        "external"
+    }
+}
+
+/// Build the unified tool listing used by both text and JSON output.
+/// Pass 1 walks the catalog (preserving its declared tier); pass 2
+/// discovers tools_paths-only entries and assigns tier from their
+/// parent's marker file. First match wins on name conflict (catalog
+/// beats discovery).
+fn gather_tool_listing(
+    catalog:         &dpe::catalog::Catalog,
+    effective_paths: &[std::path::PathBuf],
+) -> (Vec<ToolListEntry>, Vec<std::path::PathBuf>) {
+    use serde_json::Value;
+
+    let resolved_paths: Vec<std::path::PathBuf> = effective_paths.iter()
+        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .map(strip_unc_prefix)
+        .collect();
+
+    let mut tools = Vec::new();
+    let mut seen = std::collections::BTreeSet::<String>::new();
+
+    // Pass 1 — catalog entries.
+    for (name, entry) in &catalog.tools {
+        let (source, schema, output_desc) = inspect_tool_dir(name, &resolved_paths);
+        let installed = source.is_some();
+        tools.push(ToolListEntry {
+            name:               name.clone(),
+            tier:               entry.tier.clone().unwrap_or_else(|| "standard".into()),
+            runtime:            entry.runtime.clone(),
+            version:            entry.version.clone(),
+            description:        Some(entry.description.clone()).filter(|s| !s.is_empty()),
+            source,
+            installed,
+            settings_schema:    schema,
+            output_description: output_desc,
+        });
+        seen.insert(name.clone());
+    }
+
+    // Pass 2 — path-discovered tools missing from every catalog.
+    for path in &resolved_paths {
+        let Ok(entries) = std::fs::read_dir(path) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() { continue; }
+            let meta_path = p.join("meta.json");
+            let Ok(raw) = std::fs::read_to_string(&meta_path) else { continue };
+            let stripped = dpe::bom::strip_bom(&raw);
+            let Ok(meta_v): Result<Value, _> = serde_json::from_str(stripped) else { continue };
+            let Some(name) = meta_v.get("name").and_then(|v| v.as_str()) else { continue };
+            if seen.contains(name) { continue; }
+            let runtime = meta_v.get("runtime").and_then(|v| v.as_str())
+                .unwrap_or("unknown").to_string();
+            let version = meta_v.get("version").and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let description = meta_v.get("description").and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let (schema, output_desc) = read_spec_yaml(&p);
+            tools.push(ToolListEntry {
+                name:               name.to_string(),
+                tier:               tier_for_discovered_path(path).to_string(),
+                runtime,
+                version,
+                description,
+                source:             Some(p.to_string_lossy().into_owned()),
+                installed:          true,
+                settings_schema:    schema,
+                output_description: output_desc,
+            });
+            seen.insert(name.to_string());
+        }
+    }
+
+    (tools, resolved_paths)
+}
+
+/// Sort priority for tier sections in text output: standard first
+/// (most common), then pipeline-local, then external, then unknown.
+fn tier_order(t: &str) -> u8 {
+    match t {
+        "standard"       => 0,
+        "pipeline-local" => 1,
+        "external"       => 2,
+        _                => 3,
+    }
+}
+
 fn cmd_tools_list(cfg: &dpe::RunnerConfig, json: bool) -> anyhow::Result<()> {
     let registries = dpe::catalog::resolve_registries(cfg);
     let catalog = dpe::catalog::Catalog::load_from_files(&registries);
@@ -1196,26 +1424,40 @@ fn cmd_tools_list(cfg: &dpe::RunnerConfig, json: bool) -> anyhow::Result<()> {
         .chain(layout.iter().map(|l| l.tools.clone()))
         .collect();
 
+    let (mut tools, resolved_paths) = gather_tool_listing(&catalog, &effective_paths);
+
     if json {
-        return print_tools_list_json(&catalog, &registries, &effective_paths);
+        return print_tools_list_json(&tools, &registries, &effective_paths, &resolved_paths);
     }
 
-    println!("{:24} {:8} {:10} {:8} STATUS",
+    // Text: tier-sorted, then alphabetical within tier.
+    tools.sort_by(|a, b| tier_order(&a.tier).cmp(&tier_order(&b.tier))
+        .then_with(|| a.name.cmp(&b.name)));
+
+    println!("{:24} {:8} {:14} {:8} STATUS",
         "NAME", "RUNTIME", "TIER", "VERSION");
     println!("{}", "─".repeat(80));
 
-    if catalog.tools.is_empty() {
-        println!("(no tools — registry list is empty or all files failed to load)");
+    if tools.is_empty() {
+        println!("(no tools — registry empty AND no meta.json found in tools_paths)");
     }
-    for (name, entry) in &catalog.tools {
-        let status = resolve_status(name, &effective_paths);
-        println!("{:24} {:8} {:10} {:8} {}",
-            truncate(name, 24),
-            entry.runtime,
-            entry.tier.as_deref().unwrap_or(""),
-            entry.version.as_deref().unwrap_or(""),
+    for t in &tools {
+        let status = if t.installed { "installed" } else { "available (run: dpe install <name>)" };
+        println!("{:24} {:8} {:14} {:8} {}",
+            truncate(&t.name, 24),
+            t.runtime,
+            t.tier,
+            t.version.as_deref().unwrap_or(""),
             status);
     }
+
+    // Built-in stages — always available, no install needed.
+    println!();
+    println!("Built-in stages (in-process; no install needed):");
+    for b in BUILTINS {
+        println!("  {:10} {}", b.name, b.description);
+    }
+
     println!();
     println!("tools_paths searched:");
     for p in &effective_paths { println!("  {}", p.display()); }
@@ -1239,7 +1481,7 @@ fn cmd_tools_list(cfg: &dpe::RunnerConfig, json: bool) -> anyhow::Result<()> {
 ///   "version":   "2.0.1",                    // dpe version (single value)
 ///   "registries": ["...catalog.json", ...],   // resolved & loaded
 ///   "tools_paths": ["...", ...],              // resolved (after ~ expansion)
-///   "builtins":  [{name, description}, ...],  // route, filter, dedup, group_by
+///   "builtins":  [{name, description}, ...],  // route, spread, filter, dedup, group_by, toggle
 ///   "tools": [
 ///     {
 ///       "name":        "scan-fs",
@@ -1261,118 +1503,89 @@ fn cmd_tools_list(cfg: &dpe::RunnerConfig, json: bool) -> anyhow::Result<()> {
 ///   1. Catalog entries (tier from catalog, default "standard").
 ///   2. Path-discovered tools — directories under any `tools_paths` entry
 ///      with a `meta.json`/`spec.yaml` pair, but NOT in any catalog. Tier
-///      = "external". Lets pipelines pull in tool packs that don't ship
-///      a catalog (e.g. dpe-tools).
+///      = "pipeline-local" if the parent dir has `pipeline.toml`, else
+///      "external". Lets pipelines pull in tool packs that don't ship a
+///      catalog (e.g. dpe-tools) and surface their own local tools too.
 ///
-/// Builtins are listed separately; pipelines consume them transparently.
+/// Builtins are listed separately; pipelines consume them transparently
+/// — same set as the text output.
 fn print_tools_list_json(
-    catalog:        &dpe::catalog::Catalog,
-    registries:     &[std::path::PathBuf],
+    tools:           &[ToolListEntry],
+    registries:      &[std::path::PathBuf],
     effective_paths: &[std::path::PathBuf],
+    resolved_paths:  &[std::path::PathBuf],
 ) -> anyhow::Result<()> {
     use serde_json::{json, Value};
 
-    // Resolve every tools_paths entry to an absolute path BEFORE scanning,
-    // so the source paths we emit are absolute regardless of whether the
-    // user wrote a relative entry like `tools_paths = ["tools"]` in
-    // config.toml. canonicalize() also normalizes separators (no more
-    // mixed `D:/.../tools\classify` artifacts on Windows).
-    //
-    // Falls back to the original path if canonicalize fails (e.g. dir
-    // doesn't exist) — read_dir will then skip it gracefully.
-    let resolved_paths: Vec<std::path::PathBuf> = effective_paths.iter()
-        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
-        .map(strip_unc_prefix)
-        .collect();
-
-    let mut tools: Vec<Value> = Vec::new();
-    let mut seen_names = std::collections::BTreeSet::<String>::new();
-
-    // Pass 1 — catalog entries. We still walk each tools_path to find the
-    // tool's meta.json + spec.yaml so we can attach `installed`, `source`,
-    // and the settings schema.
-    for (name, entry) in &catalog.tools {
-        let (source, schema, output_desc) = inspect_tool_dir(name, &resolved_paths);
-        let installed = source.is_some();
-        tools.push(json!({
-            "name":        name,
-            "tier":        entry.tier.clone().unwrap_or_else(|| "standard".into()),
-            "runtime":     entry.runtime,
-            "version":     entry.version,
-            "description": entry.description,
-            "source":      source,
-            "settings_schema":   schema,
-            "output_description": output_desc,
-            "installed":   installed,
-        }));
-        seen_names.insert(name.clone());
-    }
-
-    // Pass 2 — path-discovered tools missing from every catalog. Walk each
-    // tools_path entry and pick up <dir>/<name>/meta.json. We use the
-    // meta.json's name (after BOM strip) so we don't get confused by dirs
-    // named differently from the tool inside them.
-    for path in &resolved_paths {
-        let Ok(entries) = std::fs::read_dir(path) else { continue };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if !p.is_dir() { continue; }
-            let meta_path = p.join("meta.json");
-            let Ok(raw) = std::fs::read_to_string(&meta_path) else { continue };
-            let stripped = dpe::bom::strip_bom(&raw);
-            let Ok(meta_v): Result<Value, _> = serde_json::from_str(stripped) else { continue };
-            let Some(name) = meta_v.get("name").and_then(|v| v.as_str()) else { continue };
-            if seen_names.contains(name) { continue; }
-            let runtime = meta_v.get("runtime").and_then(|v| v.as_str())
-                .unwrap_or("unknown").to_string();
-            let version = meta_v.get("version").and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let description = meta_v.get("description").and_then(|v| v.as_str())
-                .unwrap_or("").to_string();
-            let (schema, output_desc) = read_spec_yaml(&p);
-            tools.push(json!({
-                "name":        name,
-                "tier":        "external",
-                "runtime":     runtime,
-                "version":     version,
-                "description": description,
-                "source":      p.to_string_lossy(),
-                "settings_schema":   schema,
-                "output_description": output_desc,
-                "installed":   true,
-            }));
-            seen_names.insert(name.to_string());
-        }
-    }
+    let tools_json: Vec<Value> = tools.iter().map(|t| json!({
+        "name":               t.name,
+        "tier":               t.tier,
+        "runtime":            t.runtime,
+        "version":            t.version,
+        "description":        t.description,
+        "source":             t.source,
+        "settings_schema":    t.settings_schema,
+        "output_description": t.output_description,
+        "installed":          t.installed,
+    })).collect();
 
     let registries_arr: Vec<String> = registries.iter()
         .map(|r| r.to_string_lossy().into_owned()).collect();
     // Echo the resolved (absolute) tools_paths so consumers see the
-    // same paths embedded in tool sources. Resolved_paths is empty if
-    // no tools_paths configured, in which case we just echo the input.
+    // same paths embedded in tool sources.
     let paths_arr: Vec<String> = if resolved_paths.is_empty() {
         effective_paths.iter().map(|p| p.to_string_lossy().into_owned()).collect()
     } else {
         resolved_paths.iter().map(|p| p.to_string_lossy().into_owned()).collect()
     };
 
-    let builtins = json!([
-        {"name": "route",    "description": "Fan envelopes out to named channels by expression — first-truthy-wins"},
-        {"name": "filter",   "description": "Drop or divert envelopes that fail a boolean expression"},
-        {"name": "dedup",    "description": "Drop envelopes whose key has been seen before"},
-        {"name": "group_by", "description": "Group envelopes by key and emit aggregates"}
-    ]);
+    let builtins_json: Vec<Value> = BUILTINS.iter().map(|b| json!({
+        "name":        b.name,
+        "description": b.description,
+    })).collect();
 
     let payload = json!({
         "version":     env!("CARGO_PKG_VERSION"),
         "registries":  registries_arr,
         "tools_paths": paths_arr,
-        "builtins":    builtins,
-        "tools":       tools,
+        "builtins":    builtins_json,
+        "tools":       tools_json,
     });
 
     let s = serde_json::to_string_pretty(&payload)?;
     println!("{}", s);
+    Ok(())
+}
+
+/// Reject CLI path args that start with `$`. DPE path prefixes
+/// (`$temp`, `$storage`, ...) substitute inside SETTINGS strings only,
+/// not at the CLI. A literal `$temp` passed via `--temp-dir`
+/// propagates as DPE_TEMP="$temp" to spawned tools, and any tool that
+/// resolves a settings path against that env var ends up writing to
+/// `$temp/...` (a literal directory under its own cwd). See
+/// .agents/inbox/0011 for a real-world incident where this corrupted
+/// extraction.
+fn reject_prefix_arg(flag: &str, value: Option<&std::path::Path>) -> anyhow::Result<()> {
+    if let Some(p) = value {
+        let s = p.to_string_lossy();
+        if s.starts_with('$') {
+            anyhow::bail!(
+                "{} value '{}' starts with '$'.\n\
+                 \n\
+                 DPE path prefixes (`$temp`, `$storage`, `$session`, ...) substitute\n\
+                 inside SETTINGS strings only — at the CLI they pass through literally.\n\
+                 \n\
+                 Pass an actual filesystem path, OR omit the flag and let the runner\n\
+                 use the default (<pipeline>/temp, <pipeline>/storage).\n\
+                 \n\
+                 Examples:\n\
+                 \x20\x20WRONG: dpe run my:main --temp-dir '$temp'\n\
+                 \x20\x20OK:    dpe run my:main                          # use default\n\
+                 \x20\x20OK:    dpe run my:main --temp-dir D:/scratch    # explicit path",
+                flag, s,
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1428,14 +1641,6 @@ fn read_spec_yaml(dir: &std::path::Path) -> (Option<serde_json::Value>, Option<S
         .and_then(|d| d.as_str())
         .map(|s| s.to_string());
     (schema, output_desc)
-}
-
-fn resolve_status(name: &str, paths: &[std::path::PathBuf]) -> &'static str {
-    for p in paths {
-        let candidate = p.join(name).join("meta.json");
-        if candidate.exists() { return "installed"; }
-    }
-    "available (run: dpe install <name>)"
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1532,7 +1737,7 @@ fn cmd_config_add_path(path: &std::path::Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_seed_line;
+    use super::{check_one, reject_prefix_arg, strip_unc_prefix, wrap_seed_line};
     use dpe::paths::PathResolver;
     use serde_json::Value;
     use std::collections::BTreeMap;
@@ -1621,5 +1826,146 @@ mod tests {
         let line = wrap_seed_line(r#"{"$set":{"a":1}}"#, &r).unwrap();
         let env: Value = serde_json::from_str(line.trim()).unwrap();
         assert!(env["v"]["$set"].is_object());
+    }
+
+    // ─── check_one threads --config through (regression: inbox 0001) ─────
+    //
+    // Pre-fix: `check_one` called `dpe::load_config(None)` internally,
+    // ignoring the user's `--config` flag. Pipelines whose tools live
+    // outside the global `~/.dpe/config.toml` would fail validation
+    // even though `dpe tools list` and `dpe run` worked.
+    //
+    // The test below scaffolds a pipeline whose tool resolution requires
+    // the cfg-supplied tools_paths. Pre-fix this would fail with
+    // "tool unresolved"; post-fix it succeeds.
+
+    fn fixtures_tools_dir() -> String {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests");
+        p.push("fixtures");
+        p.push("tools");
+        p.to_string_lossy().into_owned()
+    }
+
+    fn write_minimal_pipeline(dir: &std::path::Path, tool_name: &str) {
+        std::fs::create_dir_all(dir.join("variants")).unwrap();
+        let yaml = format!(
+            "pipeline: test-pipe\nvariant: main\nstages:\n  s:\n    tool: {tool}\n    settings: {{}}\n    input: $input\n",
+            tool = tool_name,
+        );
+        std::fs::write(dir.join("variants/main.yaml"), yaml).unwrap();
+    }
+
+    #[test]
+    fn check_one_uses_supplied_cfg_tools_paths() {
+        // Scaffold pipeline that references mock-tool.
+        let tmp = tempfile::tempdir().unwrap();
+        let pipe_dir = tmp.path().join("test-pipe");
+        write_minimal_pipeline(&pipe_dir, "mock-tool");
+
+        // Build cfg pointing at the fixture tools dir.
+        let cfg = dpe::RunnerConfig {
+            tools_paths: vec![fixtures_tools_dir()],
+            ..Default::default()
+        };
+
+        // Pre-fix this would fail because check_one ignored the cfg
+        // and reloaded from None (which has no tools_paths).
+        let r = check_one(&pipe_dir, "test-pipe", "main", false, false, &cfg);
+        assert!(r.is_ok(), "expected ok, got: {:?}", r);
+    }
+
+    // ─── UNC prefix strip (regression: inbox 0005) ─────────────────────
+    //
+    // std::fs::canonicalize on Windows produces `\\?\D:\…` extended-
+    // length paths. The runner now strips that prefix at the point
+    // where the pipeline directory is resolved, so downstream
+    // PathResolver-built paths don't carry the prefix into tool
+    // settings. Bun/Node `import()` chokes on `\\?\` regardless of
+    // whether you wrap it in pathToFileURL — stripping at source is
+    // the broad fix.
+
+    #[test]
+    fn strip_unc_prefix_removes_windows_extended_prefix() {
+        let p = strip_unc_prefix(PathBuf::from(r"\\?\D:\some\path"));
+        if cfg!(windows) {
+            assert_eq!(p, PathBuf::from(r"D:\some\path"));
+        } else {
+            // On non-Windows the function is a no-op.
+            assert_eq!(p, PathBuf::from(r"\\?\D:\some\path"));
+        }
+    }
+
+    #[test]
+    fn strip_unc_prefix_passes_through_non_unc_paths() {
+        let p = strip_unc_prefix(PathBuf::from(r"D:\some\path"));
+        assert_eq!(p, PathBuf::from(r"D:\some\path"));
+        let q = strip_unc_prefix(PathBuf::from("/usr/local/bin"));
+        assert_eq!(q, PathBuf::from("/usr/local/bin"));
+    }
+
+    // ─── reject_prefix_arg (regression: 0011 — Bug 1) ──────────────────
+    //
+    // CLI flags that take filesystem paths must reject a `$`-prefix
+    // value. Path prefixes (`$temp`, `$storage`, `$session`, ...)
+    // substitute INSIDE settings only; at the CLI they pass through
+    // literally and corrupt downstream tool paths. Real-world: led
+    // to xlsx writing 4376 hash dirs under
+    // `<dpe-tools>/tools/xlsx/$temp/batch_$/raw/` instead of the
+    // pipeline temp dir.
+
+    #[test]
+    fn reject_prefix_arg_blocks_dollar_temp() {
+        let r = reject_prefix_arg("--temp-dir", Some(&PathBuf::from("$temp")));
+        assert!(r.is_err());
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("--temp-dir"), "msg should name the flag: {}", msg);
+        assert!(msg.contains("$temp"),       "msg should echo the value: {}", msg);
+        // The hint must explain the prefix-vs-CLI distinction. Word the
+        // check loosely so cosmetic message tweaks (line breaks, etc)
+        // don't break the test.
+        assert!(
+            msg.contains("substitute") && msg.contains("SETTINGS"),
+            "msg should explain prefixes substitute in settings only: {}", msg,
+        );
+    }
+
+    #[test]
+    fn reject_prefix_arg_blocks_dollar_storage_too() {
+        let r = reject_prefix_arg("--storage-dir", Some(&PathBuf::from("$storage/sub")));
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("--storage-dir"));
+    }
+
+    #[test]
+    fn reject_prefix_arg_allows_real_paths() {
+        // Absolute Windows
+        assert!(reject_prefix_arg("--temp-dir", Some(&PathBuf::from(r"D:\scratch"))).is_ok());
+        // Absolute POSIX
+        assert!(reject_prefix_arg("--temp-dir", Some(&PathBuf::from("/tmp/scratch"))).is_ok());
+        // Relative path (resolves against pipeline cwd; not a $-prefix)
+        assert!(reject_prefix_arg("--temp-dir", Some(&PathBuf::from("scratch"))).is_ok());
+    }
+
+    #[test]
+    fn reject_prefix_arg_no_op_when_unset() {
+        // Most users don't pass --temp-dir at all; None is the common case.
+        assert!(reject_prefix_arg("--temp-dir", None).is_ok());
+    }
+
+    #[test]
+    fn check_one_fails_when_tool_not_in_cfg_paths() {
+        // Counterpart: with empty cfg.tools_paths, the same pipeline
+        // should fail to resolve mock-tool. Confirms the cfg is what
+        // controls resolution (not some hidden global).
+        let tmp = tempfile::tempdir().unwrap();
+        let pipe_dir = tmp.path().join("test-pipe");
+        write_minimal_pipeline(&pipe_dir, "mock-tool");
+
+        let cfg = dpe::RunnerConfig::default();  // no tools_paths
+        let r = check_one(&pipe_dir, "test-pipe", "main", false, false, &cfg);
+        assert!(r.is_err(), "expected err with empty cfg, got Ok");
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("validation error"), "unexpected msg: {}", msg);
     }
 }

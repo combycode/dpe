@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use crate::config::RunnerConfig;
+use crate::env_interp::{interpolate_string, EnvLookup};
 use crate::expr;
 use crate::tools::{resolve as resolve_tool, BuiltinKind, Invocation, ToolError};
 use crate::types::{ResolvedVariant, Stage};
@@ -21,11 +22,12 @@ pub(super) fn run(
     variant: &ResolvedVariant,
     pipeline_dir: &Path,
     config: &RunnerConfig,
+    env: &dyn EnvLookup,
     errs: &mut Vec<ValidationError>,
 ) {
     for (name, stage) in &variant.stages {
         validate_stage_structure(name, stage, errs);
-        check_tool_and_expressions(name, stage, pipeline_dir, config, errs);
+        check_tool_and_expressions(name, stage, pipeline_dir, config, env, errs);
         check_settings_file(name, stage, pipeline_dir, errs);
     }
 }
@@ -35,12 +37,13 @@ fn check_tool_and_expressions(
     stage: &Stage,
     pipeline_dir: &Path,
     config: &RunnerConfig,
+    env: &dyn EnvLookup,
     errs: &mut Vec<ValidationError>,
 ) {
     match resolve_tool(&stage.tool, pipeline_dir, config) {
         Ok(rt) => match builtin_of(&rt.invocation) {
-            Some(BuiltinKind::Route) => check_route_expressions(name, stage, errs),
-            Some(BuiltinKind::Filter) => check_filter_expression(name, stage, errs),
+            Some(BuiltinKind::Route) => check_route_expressions(name, stage, env, errs),
+            Some(BuiltinKind::Filter) => check_filter_expression(name, stage, env, errs),
             _ => {}
         },
         Err(ToolError::NotFound { name: _, searched }) => {
@@ -60,10 +63,30 @@ fn check_tool_and_expressions(
     }
 }
 
-fn check_route_expressions(name: &str, stage: &Stage, errs: &mut Vec<ValidationError>) {
+fn check_route_expressions(
+    name: &str,
+    stage: &Stage,
+    env: &dyn EnvLookup,
+    errs: &mut Vec<ValidationError>,
+) {
     if let Some(routes) = &stage.routes {
         for (channel, expr_src) in routes {
-            if let Err(e) = expr::compile(expr_src) {
+            // Apply env-var interpolation before lexing — matches the
+            // plan-time pre-pass in `dag::plan::interpolate_stage_config`.
+            // Without this, `dpe check` would error on a literal '$'
+            // even though `dpe run` substitutes ${VAR} cleanly.
+            let interpolated = match interpolate_string(expr_src, env) {
+                Ok(s) => s,
+                Err(e) => {
+                    errs.push(ValidationError::RouteExpr {
+                        stage: name.into(),
+                        channel: channel.clone(),
+                        reason: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if let Err(e) = expr::compile(&interpolated) {
                 errs.push(ValidationError::RouteExpr {
                     stage: name.into(),
                     channel: channel.clone(),
@@ -74,9 +97,26 @@ fn check_route_expressions(name: &str, stage: &Stage, errs: &mut Vec<ValidationE
     }
 }
 
-fn check_filter_expression(name: &str, stage: &Stage, errs: &mut Vec<ValidationError>) {
+fn check_filter_expression(
+    name: &str,
+    stage: &Stage,
+    env: &dyn EnvLookup,
+    errs: &mut Vec<ValidationError>,
+) {
     if let Some(expr_src) = &stage.expression {
-        if let Err(e) = expr::compile(expr_src) {
+        // See note in check_route_expressions — env-interp pre-pass to
+        // match plan-time behavior.
+        let interpolated = match interpolate_string(expr_src, env) {
+            Ok(s) => s,
+            Err(e) => {
+                errs.push(ValidationError::FilterExpr {
+                    stage: name.into(),
+                    reason: e.to_string(),
+                });
+                return;
+            }
+        };
+        if let Err(e) = expr::compile(&interpolated) {
             errs.push(ValidationError::FilterExpr {
                 stage: name.into(),
                 reason: e.to_string(),

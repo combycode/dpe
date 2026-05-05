@@ -1,0 +1,23 @@
+pipeline: standard
+variant: 99-toggle-smoke
+# Smoke: scan-fs → toggle → write-file-stream. Toggle is gated by SKIP_BRANCH.
+# Run with SKIP_BRANCH unset → toggle action=pass (default mode=on, no match → drop;
+# or with mode=off, no match → pass — see assertion below).
+stages:
+  scan:
+    tool: scan-fs
+    settings: { include: "*", hash: none, return: files }
+    input: $input
+
+  gate:
+    tool: toggle
+    input: scan
+    settings:
+      env: SKIP_BRANCH
+      value: "1"
+      mode: off
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/scanned.ndjson", format: ndjson }
+    input: gate

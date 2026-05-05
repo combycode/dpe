@@ -71,7 +71,7 @@ async fn spawn_group_creates_n_instances_with_unique_indices() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
     let group = spawn_group(
-        &tool, &json!({"tag": "worker"}), &ctx, "w", 3, ReplicasRouting::RoundRobin
+        &tool, &json!({"tag": "worker"}), &ctx, "w", 3, ReplicasRouting::RoundRobin, None
     ).unwrap();
     assert_eq!(group.instance_count(), 3);
     assert_eq!(group.stage_id, "w");
@@ -87,7 +87,7 @@ async fn spawn_group_rejects_zero_replicas() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
     let err = spawn_group(
-        &tool, &json!({}), &ctx, "w", 0, ReplicasRouting::RoundRobin
+        &tool, &json!({}), &ctx, "w", 0, ReplicasRouting::RoundRobin, None
     ).unwrap_err();
     assert!(matches!(err, dpe::replicas::ReplicaError::InvalidCount(_)));
 }
@@ -101,13 +101,13 @@ async fn round_robin_distributes_evenly() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     // Upstream: a mock that just tags "upstream"
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None).unwrap();
     // Group of 3, each tags its own instance index (via settings tag)
     // Use identical tag; we'll distinguish via the DPE_STAGE_INSTANCE env
     // reflected by shutdown meta — but simpler: each stores its tag in trail,
     // so we count distribution via the final merged output count.
     let mut group = spawn_group(
-        &tool, &json!({"tag":"w"}), &ctx, "w", 3, ReplicasRouting::RoundRobin
+        &tool, &json!({"tag":"w"}), &ctx, "w", 3, ReplicasRouting::RoundRobin, None
     ).unwrap();
 
     let up_stdout = upstream.stdout.take().unwrap();
@@ -139,10 +139,10 @@ async fn hash_id_routes_same_id_to_same_instance() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     // Upstream emits 10 envelopes with IDs "dup-X" repeating (duplicates of 3 unique IDs)
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None).unwrap();
     let mut group = spawn_group(
         &tool, &json!({"emit_shutdown_meta": true}),
-        &ctx, "w", 3, ReplicasRouting::HashId,
+        &ctx, "w", 3, ReplicasRouting::HashId, None,
     ).unwrap();
 
     let up_stdout = upstream.stdout.take().unwrap();
@@ -183,11 +183,11 @@ async fn fan_in_to_downstream_stage_merges_correctly() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream   = spawn(&tool, &json!({"tag":"up"}),   &ctx, "up",   0).unwrap();
-    let mut downstream = spawn(&tool, &json!({"tag":"down"}), &ctx, "down", 0).unwrap();
+    let mut upstream   = spawn(&tool, &json!({"tag":"up"}),   &ctx, "up",   0, None).unwrap();
+    let mut downstream = spawn(&tool, &json!({"tag":"down"}), &ctx, "down", 0, None).unwrap();
     let mut group = spawn_group(
         &tool, &json!({"tag":"mid"}),
-        &ctx, "mid", 3, ReplicasRouting::RoundRobin,
+        &ctx, "mid", 3, ReplicasRouting::RoundRobin, None,
     ).unwrap();
 
     let up_stdout   = upstream.stdout.take().unwrap();
@@ -231,12 +231,12 @@ async fn one_replica_crash_does_not_deadlock_others() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None).unwrap();
     // Worker instance 0 crashes after 1; instance 1 + 2 keep running.
     // crash_after is per-process, so all will crash after their first.
     // For this test we just want to ensure fan_in completes when stdout closes.
     let mut group = spawn_group(
-        &tool, &json!({"crash_after": 1}), &ctx, "w", 3, ReplicasRouting::RoundRobin,
+        &tool, &json!({"crash_after": 1}), &ctx, "w", 3, ReplicasRouting::RoundRobin, None,
     ).unwrap();
 
     let up_stdout = upstream.stdout.take().unwrap();

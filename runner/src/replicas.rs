@@ -52,6 +52,9 @@ impl ReplicaGroup {
 }
 
 /// Spawn `replicas` instances of `tool` for one logical stage.
+///
+/// `stage_cache_override` mirrors `spawn` — applied to every replica's
+/// `DPE_CACHE_MODE` so they share the same per-stage cache mode.
 pub fn spawn_group(
     tool: &ResolvedTool,
     settings: &Value,
@@ -59,13 +62,14 @@ pub fn spawn_group(
     stage_id: &str,
     replicas: u32,
     routing: ReplicasRouting,
+    stage_cache_override: Option<crate::types::CacheMode>,
 ) -> Result<ReplicaGroup, ReplicaError> {
     if replicas == 0 {
         return Err(ReplicaError::InvalidCount(stage_id.into()));
     }
     let mut instances = Vec::with_capacity(replicas as usize);
     for i in 0..replicas {
-        let stage = spawn(tool, settings, session, stage_id, i)
+        let stage = spawn(tool, settings, session, stage_id, i, stage_cache_override)
             .map_err(|e| ReplicaError::Spawn { stage_id: stage_id.into(), index: i, source: e })?;
         instances.push(stage);
     }

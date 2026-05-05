@@ -16,6 +16,7 @@
 use std::path::Path;
 
 use crate::config::RunnerConfig;
+use crate::env_interp::{EnvLookup, ProcessEnv};
 use crate::types::ResolvedVariant;
 
 mod resolve;
@@ -56,13 +57,30 @@ pub enum ValidationError {
 /// config. Returns Ok(()) when every pass exits clean; otherwise a non-empty
 /// list of errors collected from all passes (don't stop at the first one —
 /// users want the full report from one `dpe check`).
+///
+/// Uses the real process environment for `${VAR}` interpolation. For
+/// editor-time validation where the runtime env isn't known yet, see
+/// [`validate_with_env`] and pass [`crate::env_interp::AllowUndefinedEnv`].
 pub fn validate(
     variant: &ResolvedVariant,
     pipeline_dir: &Path,
     config: &RunnerConfig,
 ) -> Result<(), Vec<ValidationError>> {
+    validate_with_env(variant, pipeline_dir, config, &ProcessEnv)
+}
+
+/// Same as [`validate`] but lets the caller inject the env source used
+/// by `${VAR}` interpolation in expressions and settings. `dpe check
+/// --allow-undefined-env` passes `&AllowUndefinedEnv` here so unset vars
+/// resolve to "" instead of erroring.
+pub fn validate_with_env(
+    variant: &ResolvedVariant,
+    pipeline_dir: &Path,
+    config: &RunnerConfig,
+    env: &dyn EnvLookup,
+) -> Result<(), Vec<ValidationError>> {
     let mut errs = Vec::new();
-    resolve::run(variant, pipeline_dir, config, &mut errs);
+    resolve::run(variant, pipeline_dir, config, env, &mut errs);
     link::run(variant, &mut errs);
     topology::run(variant, &mut errs);
     if errs.is_empty() { Ok(()) } else { Err(errs) }

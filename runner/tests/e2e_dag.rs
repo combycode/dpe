@@ -450,12 +450,239 @@ stages:
     let _ = run_variant(
         &v, tmp.path(), &ctx, &cfg,
         InputSource::Bytes(input),
-        OutputSink::Directory(out_dir.clone()),
+        OutputSink::DebugDir { dir: out_dir.clone(), stages: None },
     ).await.unwrap();
 
     let written = fs::read_to_string(out_dir.join("s.ndjson")).unwrap();
     assert!(written.contains("\"hi\":1"));
     assert!(written.contains("\"_trail\":[\"s\"]"));
+}
+
+// ─── OutputSink variants (regression: inbox 0003) ─────────────────────
+//
+// Pre-fix: every terminal stage's stdout was written unconditionally to
+// `<output>/<stage>.ndjson`, polluting the user's output dir with empty
+// placeholder files for tools that wrote their own files (and held
+// large emissions in memory pointlessly). The fix splits the sink
+// behavior across three variants — Discard (default), Memory
+// (programmatic), DebugDir (opt-in via --debug-capture).
+
+#[tokio::test]
+async fn dag_discard_sink_writes_no_files() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  s:
+    tool: mock-tool
+    settings: { tag: s }
+    input: $input
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let out_dir = tmp.path().join("out");
+    fs::create_dir_all(&out_dir).unwrap();
+    let input = br#"{"t":"d","id":"x","src":"s","v":{"hi":1}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Discard,
+    ).await.unwrap();
+
+    // No file written — that's the headline regression.
+    assert!(!out_dir.join("s.ndjson").exists(),
+        "Discard sink must not write per-stage files");
+    // DagReport.terminal_output also empty — no buffering, no RAM cost.
+    assert!(report.terminal_output.is_empty(),
+        "Discard sink must not buffer; got {:?}", report.terminal_output.keys().collect::<Vec<_>>());
+}
+
+#[tokio::test]
+async fn dag_debugdir_sink_filters_by_stage_allowlist() {
+    // Two terminals; allow-list only one.
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  alpha:
+    tool: mock-tool
+    settings: { tag: a }
+    input: $input
+  bravo:
+    tool: mock-tool
+    settings: { tag: b }
+    input: $input
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let out_dir = tmp.path().join("debug");
+    let input = br#"{"t":"d","id":"x","src":"s","v":{"hi":1}}
+"#.to_vec();
+
+    let mut allow = std::collections::HashSet::new();
+    allow.insert("alpha".to_string());
+
+    let _ = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::DebugDir { dir: out_dir.clone(), stages: Some(allow) },
+    ).await.unwrap();
+
+    // Only the listed stage gets a file.
+    assert!(out_dir.join("alpha.ndjson").exists(),
+        "alpha was on the allow-list and should be written");
+    assert!(!out_dir.join("bravo.ndjson").exists(),
+        "bravo was NOT on the allow-list and must not be written");
+}
+
+#[tokio::test]
+async fn dag_memory_sink_populates_terminal_output() {
+    // Memory mode preserves the existing programmatic API surface so
+    // integration tests can read back what each terminal emitted.
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  m:
+    tool: mock-tool
+    settings: { tag: m }
+    input: $input
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let input = br#"{"t":"d","id":"x","src":"s","v":{"k":42}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let bytes = report.terminal_output.get("m")
+        .expect("Memory sink must populate terminal_output['m']");
+    let text = String::from_utf8_lossy(bytes);
+    assert!(text.contains("\"k\":42"), "expected emitted envelope, got: {}", text);
+}
+
+// ─── spread builtin (regression: inbox 0007) ──────────────────────────
+//
+// spread takes one upstream stream and broadcasts each envelope to N
+// downstream consumers — the missing primitive for DAG fan-out (route
+// is first-truthy-wins, dispatches each envelope to ONE channel).
+
+#[tokio::test]
+async fn dag_spread_broadcasts_to_two_terminals() {
+    // Two terminal sinks both consume the spread; both should receive
+    // the FULL upstream stream (not first-wins like route).
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  fan:
+    tool: spread
+    input: src
+  sink_a:
+    tool: mock-tool
+    settings: { tag: A }
+    input: fan
+  sink_b:
+    tool: mock-tool
+    settings: { tag: B }
+    input: fan
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    // Two input envelopes.
+    let input = br#"{"t":"d","id":"1","src":"s","v":{"n":1}}
+{"t":"d","id":"2","src":"s","v":{"n":2}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let a = report.terminal_output.get("sink_a").expect("sink_a missing");
+    let b = report.terminal_output.get("sink_b").expect("sink_b missing");
+    let a_text = String::from_utf8_lossy(a);
+    let b_text = String::from_utf8_lossy(b);
+
+    // Both terminals saw both envelopes (n=1 and n=2).
+    assert!(a_text.contains("\"n\":1"), "sink_a missing n=1: {}", a_text);
+    assert!(a_text.contains("\"n\":2"), "sink_a missing n=2: {}", a_text);
+    assert!(b_text.contains("\"n\":1"), "sink_b missing n=1: {}", b_text);
+    assert!(b_text.contains("\"n\":2"), "sink_b missing n=2: {}", b_text);
+    // And the trail proves they came through different terminals
+    // (mock-tool tags via _trail field).
+    assert!(a_text.contains("\"A\""));
+    assert!(b_text.contains("\"B\""));
+}
+
+#[tokio::test]
+async fn dag_spread_allows_multiple_consumers() {
+    // Pre-fix the runner rejected multi-consumer for non-route stages.
+    // This test is the topology-validation regression: it would error
+    // out at compile() with MultipleConsumers if the spread carve-out
+    // wasn't there.
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  fan:
+    tool: spread
+    input: src
+  sink_a:
+    tool: mock-tool
+    settings: { tag: A }
+    input: fan
+  sink_b:
+    tool: mock-tool
+    settings: { tag: B }
+    input: fan
+  sink_c:
+    tool: mock-tool
+    settings: { tag: C }
+    input: fan
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let input = br#"{"t":"d","id":"x","src":"s","v":{"k":1}}
+"#.to_vec();
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    // All three terminals received the envelope.
+    for sink in &["sink_a", "sink_b", "sink_c"] {
+        let bytes = report.terminal_output.get(*sink)
+            .unwrap_or_else(|| panic!("{} missing from terminal_output", sink));
+        let text = String::from_utf8_lossy(bytes);
+        assert!(text.contains("\"k\":1"), "{} missing envelope: {}", sink, text);
+    }
 }
 
 // ─── builtin → builtin directly (no intermediate spawned stage) ──────

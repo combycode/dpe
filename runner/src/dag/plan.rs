@@ -92,9 +92,25 @@ pub enum BuiltinSpec {
     },
     Dedup(DedupCfg),
     GroupBy(GroupByCfg),
+    /// Broadcast: no settings, no expressions. Each envelope from the
+    /// single upstream is forwarded verbatim to every downstream
+    /// consumer. Topology defines the fan-out — multi-consumer is
+    /// allowed for spread stages (validated by `validate_single_consumer`).
+    Spread,
+    /// Env-gated 1→1 passthrough. The pass/drop decision is taken
+    /// at plan-compile time from the env source threaded into
+    /// `compile_with_env`, so the per-envelope hot path is just a
+    /// byte-copy (pass) or constant-time skip (drop). The plan
+    /// records the resolved [`crate::builtins::ToggleAction`] for
+    /// transparent inspection via `dpe check --plan`.
+    Toggle {
+        action: crate::builtins::ToggleAction,
+    },
 }
 
-/// Compile a plan from a resolved variant.
+/// Compile a plan from a resolved variant. Uses the real process env
+/// for `${VAR}` interpolation. For editor-time validation where the
+/// runtime env isn't known, see [`compile_with_env`].
 ///
 /// The `static_resolver` substitutes whichever `$prefix/...` paths the
 /// caller knows about. Pass an empty resolver (or one that omits a prefix)
@@ -106,6 +122,20 @@ pub fn compile(
     config:          &RunnerConfig,
     static_resolver: &PathResolver,
 ) -> Result<ExecutionPlan, DagError> {
+    use crate::env_interp::ProcessEnv;
+    compile_with_env(variant, pipeline_dir, config, static_resolver, &ProcessEnv)
+}
+
+/// Same as [`compile`] but lets the caller inject the env source used
+/// for `${VAR}` interpolation. Pass [`crate::env_interp::AllowUndefinedEnv`]
+/// for `dpe check --allow-undefined-env`.
+pub fn compile_with_env(
+    variant:         &ResolvedVariant,
+    pipeline_dir:    &Path,
+    config:          &RunnerConfig,
+    static_resolver: &PathResolver,
+    env:             &dyn crate::env_interp::EnvLookup,
+) -> Result<ExecutionPlan, DagError> {
     let order = topological_order(variant).map_err(DagError::Cycle)?;
 
     let consumers = compute_consumers(variant);
@@ -113,7 +143,7 @@ pub fn compile(
 
     let mut stages = BTreeMap::new();
     for (name, stage) in &variant.stages {
-        let planned = plan_stage(name, stage, pipeline_dir, config, static_resolver)?;
+        let planned = plan_stage(name, stage, pipeline_dir, config, static_resolver, env)?;
         stages.insert(name.clone(), planned);
     }
 
@@ -143,6 +173,7 @@ fn plan_stage(
     pipeline_dir:    &Path,
     config:          &RunnerConfig,
     static_resolver: &PathResolver,
+    env:             &dyn crate::env_interp::EnvLookup,
 ) -> Result<PlannedStage, DagError> {
     let tool = resolve_tool(&stage.tool, pipeline_dir, config)
         .map_err(|e: ToolError| DagError::Stage {
@@ -150,7 +181,15 @@ fn plan_stage(
             reason: format!("resolve: {}", e),
         })?;
 
-    let kind = kind_for_stage(name, stage, &tool.invocation)?;
+    // Pre-pass: interpolate ${VAR} / ${VAR:-default} across ALL stage
+    // config strings — settings, expression (filter), routes channel
+    // expressions (route), dedup config, group_by config. Topology
+    // fields (tool, input, settings_file, etc.) are intentionally
+    // skipped: interpolating those would mask DAG-validation errors.
+    // Strict-brace syntax keeps $prefix and Mongo $set untouched.
+    let stage = interpolate_stage_config(name, stage, env)?;
+
+    let kind = kind_for_stage(name, &stage, &tool.invocation, env)?;
 
     let raw_settings = stage.settings.clone().unwrap_or(Value::Object(Default::default()));
     let resolved_settings = static_resolver.resolve_in_value(&raw_settings)
@@ -158,17 +197,88 @@ fn plan_stage(
 
     Ok(PlannedStage {
         name: name.into(),
-        stage_def: stage.clone(),
+        stage_def: stage,
         invocation: tool.invocation,
         resolved_settings,
         kind,
     })
 }
 
+/// Apply env-var interpolation to every user-supplied string in the
+/// stage's config. Returns a new Stage; the input is untouched.
+///
+/// Interpolated:
+/// - `settings`   (recursive walk of the JSON tree)
+/// - `expression` (filter)
+/// - `routes`     (route — VALUES only; channel-name keys stay literal
+///   because downstream stages reference them as `<stage>.<channel>`
+///   and that's DAG topology)
+/// - `dedup`      (typed config — round-trips via Value so every string
+///   field gets the recursive walk)
+/// - `group_by`   (same)
+///
+/// NOT interpolated (DAG topology / typed-only fields):
+/// - `tool`, `input`, `settings_file`, `replicas`, `replicas_routing`,
+///   `trace`, `cache`, `on_error`, `on_false`.
+fn interpolate_stage_config(
+    name: &str,
+    stage: &Stage,
+    env: &dyn crate::env_interp::EnvLookup,
+) -> Result<Stage, DagError> {
+    use crate::env_interp::{interpolate_in_value, interpolate_string, EnvInterpError};
+
+    fn map_err(name: &str) -> impl Fn(EnvInterpError) -> DagError + '_ {
+        move |e: EnvInterpError| DagError::Stage {
+            stage: name.into(),
+            reason: e.to_string(),
+        }
+    }
+    let me = map_err(name);
+
+    let mut s = stage.clone();
+
+    if let Some(v) = s.settings.as_mut() {
+        *v = interpolate_in_value(v, env).map_err(&me)?;
+    }
+    if let Some(expr) = s.expression.as_mut() {
+        *expr = interpolate_string(expr, env).map_err(&me)?;
+    }
+    if let Some(routes) = s.routes.as_mut() {
+        for value in routes.values_mut() {
+            *value = interpolate_string(value, env).map_err(&me)?;
+        }
+    }
+    if let Some(d) = s.dedup.as_ref() {
+        let v = serde_json::to_value(d).map_err(|e| DagError::Stage {
+            stage: name.into(),
+            reason: format!("dedup serialize for env interp: {}", e),
+        })?;
+        let v = interpolate_in_value(&v, env).map_err(&me)?;
+        s.dedup = Some(serde_json::from_value(v).map_err(|e| DagError::Stage {
+            stage: name.into(),
+            reason: format!("dedup deserialize after env interp: {}", e),
+        })?);
+    }
+    if let Some(g) = s.group_by.as_ref() {
+        let v = serde_json::to_value(g).map_err(|e| DagError::Stage {
+            stage: name.into(),
+            reason: format!("group_by serialize for env interp: {}", e),
+        })?;
+        let v = interpolate_in_value(&v, env).map_err(&me)?;
+        s.group_by = Some(serde_json::from_value(v).map_err(|e| DagError::Stage {
+            stage: name.into(),
+            reason: format!("group_by deserialize after env interp: {}", e),
+        })?);
+    }
+
+    Ok(s)
+}
+
 fn kind_for_stage(
     name:       &str,
     stage:      &Stage,
     invocation: &Invocation,
+    env:        &dyn crate::env_interp::EnvLookup,
 ) -> Result<PlannedKind, DagError> {
     match invocation {
         Invocation::Builtin(BuiltinKind::Route) => {
@@ -206,6 +316,26 @@ fn kind_for_stage(
             })?;
             Ok(PlannedKind::CallBuiltin(BuiltinSpec::GroupBy(cfg)))
         }
+        Invocation::Builtin(BuiltinKind::Spread) => {
+            // No settings, no expressions — pure topology fan-out.
+            Ok(PlannedKind::CallBuiltin(BuiltinSpec::Spread))
+        }
+        Invocation::Builtin(BuiltinKind::Toggle) => {
+            // Settings already env-interpolated by interpolate_stage_config
+            // (settings IS interpolated, so any ${VAR} inside `value:` /
+            // `values:` strings is resolved). The toggle's own env-var
+            // lookup uses the same env source threaded through compile,
+            // keeping `dpe check --allow-undefined-env` consistent: an
+            // unset var resolves to "" and toggle decides accordingly.
+            let raw = stage.settings.clone().unwrap_or(Value::Object(Default::default()));
+            let cfg = crate::builtins::parse_toggle_cfg(name, &raw)
+                .map_err(|e| DagError::Stage {
+                    stage: name.into(),
+                    reason: e.to_string(),
+                })?;
+            let action = crate::builtins::decide_action(&cfg, env);
+            Ok(PlannedKind::CallBuiltin(BuiltinSpec::Toggle { action }))
+        }
         Invocation::Binary { .. } | Invocation::Command { .. } => {
             if stage.replicas > 1 {
                 Ok(PlannedKind::SpawnReplicas {
@@ -242,15 +372,18 @@ fn stage_input_refs(stage: &Stage) -> Vec<String> {
     }
 }
 
-/// Non-route stages may have at most one downstream consumer. Route stages
-/// fan out across channels and are exempt.
+/// Non-fanout stages may have at most one downstream consumer.
+/// Exempted: `route` (per-channel dispatch) and `spread` (broadcast).
 fn validate_single_consumer(
     variant:   &ResolvedVariant,
     consumers: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), DagError> {
     for (upstream, cons) in consumers {
-        if cons.len() > 1 && variant.stages[upstream].tool != "route" {
-            return Err(DagError::MultipleConsumers { stage: upstream.clone() });
+        if cons.len() > 1 {
+            let tool = variant.stages[upstream].tool.as_str();
+            if tool != "route" && tool != "spread" {
+                return Err(DagError::MultipleConsumers { stage: upstream.clone() });
+            }
         }
     }
     Ok(())
@@ -400,7 +533,7 @@ mod tests {
             program: "/fake/scan-fs".into(),
             cwd:     "/fake".into(),
         };
-        let kind = kind_for_stage("scan", &s, &inv).unwrap();
+        let kind = kind_for_stage("scan", &s, &inv, &crate::env_interp::ProcessEnv).unwrap();
         match kind {
             PlannedKind::SpawnReplicas { count: 4, routing: ReplicasRouting::RoundRobin } => {}
             other => panic!("expected SpawnReplicas, got {:?}", other),
@@ -414,7 +547,7 @@ mod tests {
             program: "/fake/scan-fs".into(),
             cwd:     "/fake".into(),
         };
-        let kind = kind_for_stage("scan", &s, &inv).unwrap();
+        let kind = kind_for_stage("scan", &s, &inv, &crate::env_interp::ProcessEnv).unwrap();
         assert!(matches!(kind, PlannedKind::SpawnSingle));
     }
 
@@ -498,5 +631,125 @@ mod tests {
         let json = serde_json::to_string_pretty(&plan).unwrap();
         assert!(json.contains("\"call_builtin\""));
         assert!(json.contains("\"filter\""));
+    }
+
+    // ─── env-var interpolation across stage config (regression: 0006) ─
+    //
+    // Pre-fix: ${VAR} only reached `stage.settings`. Filter
+    // expressions, route channel expressions, dedup config, and
+    // group_by config were skipped. The tests below pin every
+    // affected surface so a future env_interp change can't silently
+    // re-narrow the scope.
+
+    /// Use a uniquely-named env var so tests don't race with each
+    /// other or with `from_env_reads_set_vars` in paths.rs.
+    /// SAFETY: std::env::set_var is process-global; test harness runs
+    /// these single-threaded for the same `cargo test --lib` binary
+    /// in practice, but unique keys make the failure mode benign.
+    fn with_env<R>(key: &str, value: &str, f: impl FnOnce() -> R) -> R {
+        // SAFETY: see fn-level comment.
+        unsafe { std::env::set_var(key, value); }
+        let r = f();
+        unsafe { std::env::remove_var(key); }
+        r
+    }
+
+    #[test]
+    fn interpolates_filter_expression() {
+        // ${BATCH} on filter.expression must substitute before the
+        // expression compiler ever sees the string. Pre-fix the
+        // compiler hit a literal '$' and errored at lex time.
+        with_env("DPE_TEST_INTERP_FILTER_BATCH", "10", || {
+            let mut filt = stg("filter", Some(Input::One("$input".into())));
+            filt.expression = Some(
+                "v.x == ${DPE_TEST_INTERP_FILTER_BATCH}".into(),
+            );
+            let v = variant(vec![("f", filt)]);
+            let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver())
+                .unwrap();
+            // Inspect the compiled stage's expression — it should be
+            // the post-interpolation string.
+            let f = plan.stages.get("f").unwrap();
+            assert_eq!(f.stage_def.expression.as_deref(), Some("v.x == 10"));
+        });
+    }
+
+    #[test]
+    fn interpolates_route_channel_values_not_keys() {
+        // route.routes is IndexMap<String, String>: channel-name (key)
+        // is DAG topology and must stay literal; the per-channel
+        // expression (value) IS user input and must be interpolated.
+        with_env("DPE_TEST_INTERP_ROUTE_VAL", "42", || {
+            let mut rt = stg("route", Some(Input::One("$input".into())));
+            let mut routes = indexmap::IndexMap::new();
+            routes.insert("primary".into(), "v.n == ${DPE_TEST_INTERP_ROUTE_VAL}".into());
+            routes.insert("fallback".into(), "true".into());
+            rt.routes = Some(routes);
+            let v = variant(vec![("r", rt)]);
+            let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver())
+                .unwrap();
+            let r = plan.stages.get("r").unwrap();
+            let routes = r.stage_def.routes.as_ref().unwrap();
+            // Channel names: untouched (topology).
+            assert!(routes.contains_key("primary"));
+            assert!(routes.contains_key("fallback"));
+            // Channel expressions: interpolated.
+            assert_eq!(routes.get("primary").map(|s| s.as_str()), Some("v.n == 42"));
+            assert_eq!(routes.get("fallback").map(|s| s.as_str()), Some("true"));
+        });
+    }
+
+    #[test]
+    fn interpolates_dedup_index_name() {
+        // dedup config has multiple string fields; the typed-cfg
+        // round-trip via Value walks every one. Verify on
+        // `index_name` (most common parameterizable field).
+        use crate::types::{DedupCfg, DedupHashAlgo, OnDuplicate};
+        with_env("DPE_TEST_INTERP_DEDUP_NAME", "tenant-7", || {
+            let cfg = DedupCfg {
+                key: vec!["v.id".into()],
+                hash_algo: DedupHashAlgo::Xxh64,
+                index_name: "${DPE_TEST_INTERP_DEDUP_NAME}-files".into(),
+                path: None,
+                load_existing: true,
+                on_duplicate: OnDuplicate::Drop,
+            };
+            let mut d = stg("dedup", Some(Input::One("$input".into())));
+            d.dedup = Some(cfg);
+            let v = variant(vec![("d", d)]);
+            let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver())
+                .unwrap();
+            let dedup = plan.stages.get("d").unwrap().stage_def.dedup.as_ref().unwrap();
+            assert_eq!(dedup.index_name, "tenant-7-files");
+        });
+    }
+
+    #[test]
+    fn topology_fields_not_interpolated() {
+        // Even with the env var SET, the tool name MUST NOT be
+        // substituted — `tool:` is DAG topology, runner uses it for
+        // resolution. Same for input. Setting these via ${VAR} would
+        // break dpe check + plan reasoning.
+        with_env("DPE_TEST_INTERP_TOOL", "filter", || {
+            // Use the literal "${DPE_TEST_INTERP_TOOL}" as a tool
+            // name. resolve_tool would fail if interpolation ran on
+            // tool (it'd resolve to "filter" which is a builtin, but
+            // that's NOT what the user wrote). Pre-flight: ensure the
+            // raw string survives into PlannedStage.stage_def.tool.
+            let mut s = stg("${DPE_TEST_INTERP_TOOL}", Some(Input::One("$input".into())));
+            s.expression = None;
+            let v = variant(vec![("s", s)]);
+            // Tool resolution will fail (the literal "${...}" is not a
+            // valid tool name), so compile() errors. We assert the
+            // error message references the LITERAL, not "filter" —
+            // confirming no interpolation happened on the tool field.
+            let err = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver())
+                .unwrap_err();
+            let msg = format!("{}", err);
+            assert!(msg.contains("${DPE_TEST_INTERP_TOOL}") || msg.contains("DPE_TEST_INTERP_TOOL"),
+                "expected literal tool name in error, got: {}", msg);
+            assert!(!msg.contains(": filter"),
+                "tool field was interpolated to 'filter' — should be literal: {}", msg);
+        });
     }
 }

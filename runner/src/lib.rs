@@ -9,6 +9,7 @@ pub mod config;
 pub mod control;
 pub mod dag;
 pub mod env;
+pub mod env_interp;
 pub mod home;
 pub mod init;
 pub mod install;

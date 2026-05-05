@@ -50,12 +50,18 @@ pub struct SpawnedStage {
 
 /// Launch `tool` as a child process. Settings are serialized to JSON and
 /// passed as a single argv[1] arg per the DPE tool contract.
+///
+/// `stage_cache_override` is the per-stage `cache:` field from the
+/// variant. When `Some`, it overrides the session-level cache mode in
+/// the spawned tool's `DPE_CACHE_MODE` env var. `None` ⇒ inherit
+/// session mode (set by the `--cache` CLI flag).
 pub fn spawn(
     tool: &ResolvedTool,
     settings: &Value,
     session: &SessionContext,
     stage_id: &str,
     instance_idx: u32,
+    stage_cache_override: Option<crate::types::CacheMode>,
 ) -> Result<SpawnedStage, SpawnError> {
     let invocation = match &tool.invocation {
         Invocation::Builtin(_) => return Err(SpawnError::IsBuiltin(tool.meta.name.clone())),
@@ -72,7 +78,7 @@ pub fn spawn(
 
     // Runtime env: start empty, inject DPE_*, then selectively inherit from
     // the runner process (PATH is essential; HOME + USERPROFILE for python/bun).
-    for (k, v) in session.env_for_stage(stage_id, instance_idx) {
+    for (k, v) in session.env_for_stage(stage_id, instance_idx, stage_cache_override) {
         cmd.env(k, v);
     }
     inherit_if_set(&mut cmd, "PATH");
@@ -238,7 +244,7 @@ mod tests {
             meta: ToolMeta {
                 name: "route".into(), version: None, description: None,
                 runtime: ToolRuntime::Rust, entry: None, run: None,
-                build: None, test: None, settings_schema: None,
+                build: None, test: None, settings_schema: None, spec: None,
             },
             dir: PathBuf::new(),
             invocation: Invocation::Builtin(BuiltinKind::Route),
@@ -248,7 +254,7 @@ mod tests {
     #[test]
     fn spawning_builtin_rejects() {
         let s = serde_json::json!({});
-        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0).unwrap_err();
+        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0, None).unwrap_err();
         assert!(matches!(err, SpawnError::IsBuiltin(_)));
     }
 

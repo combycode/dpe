@@ -42,6 +42,16 @@ pub struct ToolMeta {
     pub test: Option<String>,
     #[serde(default)]
     pub settings_schema: Option<String>,
+    /// Optional pointer to a `spec.yaml` (relative to the tool dir)
+    /// that dpe-dev / dag-editor can load for richer settings
+    /// introspection (settings shape, input/output examples, prompts
+    /// directory hints, etc.). The runner itself doesn't consume this
+    /// — it's a documentation pointer for tooling. Declared here so
+    /// strict deserialization (`deny_unknown_fields`) accepts metas
+    /// authored by tools that include the pointer (classify,
+    /// doc-converter, llm, etc.).
+    #[serde(default)]
+    pub spec: Option<String>,
 }
 
 /// What the runner uses to launch a stage.
@@ -63,6 +73,21 @@ pub enum BuiltinKind {
     Filter,
     Dedup,
     GroupBy,
+    /// Broadcast: each envelope from the single upstream is forwarded
+    /// verbatim to ALL downstream consumers. Unlike `route` (which
+    /// picks ONE channel per envelope), `spread` duplicates the stream
+    /// — N consumers each get the full envelope set. No expressions,
+    /// no settings; topology alone defines the fan-out.
+    Spread,
+    /// Env-gated 1→1 passthrough. Transparent by default (every
+    /// envelope forwarded verbatim — id, src, v unchanged). When
+    /// `settings.env` + `settings.value`/`values` is configured, the
+    /// gate either passes-all or drops-all per the env match and
+    /// `mode: on | off`. Decision is made once at plan-compile time;
+    /// per-envelope cost is byte-copy (pass) or constant-time skip
+    /// (drop). Use to turn whole branches on/off per run without
+    /// duplicating variants.
+    Toggle,
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +246,8 @@ fn builtin_kind(name: &str) -> Option<BuiltinKind> {
         "filter"   => Some(BuiltinKind::Filter),
         "dedup"    => Some(BuiltinKind::Dedup),
         "group-by" => Some(BuiltinKind::GroupBy),
+        "spread"   => Some(BuiltinKind::Spread),
+        "toggle"   => Some(BuiltinKind::Toggle),
         _ => None,
     }
 }
@@ -234,6 +261,8 @@ fn builtin_meta(name: &str, kind: BuiltinKind) -> ToolMeta {
             BuiltinKind::Filter  => "Runner-internal filter via expression".into(),
             BuiltinKind::Dedup   => "Runner-internal deduplication by composed hash key + persistent index".into(),
             BuiltinKind::GroupBy => "Runner-internal group-by: buckets envelopes under a key until a trigger fires".into(),
+            BuiltinKind::Spread  => "Runner-internal broadcast: each envelope is forwarded to every downstream consumer".into(),
+            BuiltinKind::Toggle  => "Runner-internal env-gated passthrough: pass-all or drop-all per env match (decision fixed at plan-compile time)".into(),
         }),
         runtime: ToolRuntime::Rust,    // runtime field irrelevant for builtins
         entry: None,
@@ -241,6 +270,7 @@ fn builtin_meta(name: &str, kind: BuiltinKind) -> ToolMeta {
         build: None,
         test: None,
         settings_schema: None,
+        spec: None,
     }
 }
 
@@ -345,6 +375,43 @@ mod tests {
         let r = resolve("foo", tmp.path(), &RunnerConfig::default()).unwrap();
         assert_eq!(r.meta.name, "foo");
         assert!(matches!(r.invocation, Invocation::Binary { .. }));
+    }
+
+    #[test] fn meta_json_with_spec_field_parses(/* regression: inbox 0004 */) {
+        // dpe-tools tools (classify, doc-converter, llm) include a
+        // `spec: "spec.yaml"` pointer in meta.json — used by tooling to
+        // locate the tool's spec for editor introspection. Strict
+        // deserialization rejected this until 2026-05-03; this guards
+        // the now-explicit Option<String> field.
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("withspec");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("meta.json"),
+            r#"{"name":"withspec","runtime":"rust","entry":"bin","spec":"spec.yaml"}"#,
+        ).unwrap();
+        mk_binary(&local, "bin");
+        let r = resolve("withspec", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert_eq!(r.meta.name, "withspec");
+        assert_eq!(r.meta.spec.as_deref(), Some("spec.yaml"));
+    }
+
+    #[test] fn meta_json_still_rejects_truly_unknown_fields() {
+        // Confirm we kept deny_unknown_fields. Typos like "rumtime" or
+        // bogus keys still fail loudly — `spec` is the only addition,
+        // not a relaxation of the schema.
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("typoed");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("meta.json"),
+            r#"{"name":"typoed","runtime":"rust","entry":"bin","rumtime":"rust"}"#,
+        ).unwrap();
+        mk_binary(&local, "bin");
+        let err = resolve("typoed", tmp.path(), &RunnerConfig::default()).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("unknown field") && msg.contains("rumtime"),
+            "expected typo rejection, got: {}", msg);
     }
 
     #[test] fn meta_json_with_utf8_bom_parses_cleanly() {
