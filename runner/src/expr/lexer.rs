@@ -102,8 +102,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
             let mut s = String::new();
             let mut terminated = false;
             while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if ch == '\\' && i + 1 < bytes.len() {
+                let b = bytes[i];
+                if b == b'\\' && i + 1 < bytes.len() {
+                    // Escape sequences are ASCII-only by design (n / t / r /
+                    // \ / quote chars). For unknown escapes we preserve the
+                    // following byte as a Unicode char — only ASCII follow-
+                    // bytes are reachable here because the next branch
+                    // below decodes any non-ASCII byte as a UTF-8 char.
                     let nxt = bytes[i+1] as char;
                     s.push(match nxt {
                         'n' => '\n',
@@ -115,10 +120,27 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
                         other => other,
                     });
                     i += 2;
-                } else if ch == quote {
+                } else if b == quote as u8 {
                     terminated = true; i += 1; break;
+                } else if b < 0x80 {
+                    // ASCII fast path.
+                    s.push(b as char);
+                    i += 1;
                 } else {
-                    s.push(ch); i += 1;
+                    // Multi-byte UTF-8 char: decode the next char from the
+                    // source &str (always valid UTF-8). We were on a char
+                    // boundary because every previous branch advanced by
+                    // exactly one ASCII byte OR by `len_utf8()`. Without
+                    // this branch, `bytes[i] as char` would split a
+                    // multi-byte sequence into garbage Latin-1 codepoints —
+                    // mojibake — and `'оплат'` etc. would never match a
+                    // real Cyrillic v.sheet at runtime (regression: inbox
+                    // 0022).
+                    let ch = src[i..].chars().next()
+                        .expect("valid UTF-8 char at byte boundary");
+                    let len = ch.len_utf8();
+                    s.push(ch);
+                    i += len;
                 }
             }
             if !terminated { return Err(LexError::UnterminatedString(start)); }
@@ -194,6 +216,46 @@ mod tests {
     }
     #[test] fn string_unterminated() {
         assert!(matches!(tokenize("'oops"), Err(LexError::UnterminatedString(_))));
+    }
+
+    // ─── UTF-8 in string literals (regression: inbox 0022) ──────────
+    //
+    // Pre-fix the lexer iterated `bytes[i] as char`, splitting every
+    // multi-byte UTF-8 sequence into garbage Latin-1 codepoints. So
+    // `'оплат'` in YAML became mojibake at the Token::String level,
+    // and runtime `includes(real_cyrillic_v_sheet, mangled_literal)`
+    // was always false. Test pins the bytes match the intended chars.
+
+    #[test] fn string_cyrillic_lowercase_preserved() {
+        // 5 chars × 2 bytes/char in UTF-8 → 10 bytes in the source,
+        // BUT the Token::String must hold exactly the 5 chars.
+        let toks = tok("'оплат'");
+        let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
+        assert_eq!(s, "оплат");
+        assert_eq!(s.chars().count(), 5);
+        assert_eq!(s.as_bytes(), [0xD0,0xBE, 0xD0,0xBF, 0xD0,0xBB, 0xD0,0xB0, 0xD1,0x82]);
+    }
+
+    #[test] fn string_with_embedded_cyrillic_substring() {
+        // Mixed: ASCII + Cyrillic + ASCII. Round-trip exact.
+        let toks = tok("'sheet оплаты APP4U'");
+        let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
+        assert_eq!(s, "sheet оплаты APP4U");
+    }
+
+    #[test] fn string_emoji_4byte_utf8_preserved() {
+        // 4-byte UTF-8 (supplementary plane). Catches the case the
+        // 2-byte fix might still get wrong if mis-implemented.
+        let toks = tok("'rocket 🚀 go'");
+        let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
+        assert_eq!(s, "rocket 🚀 go");
+    }
+
+    #[test] fn string_cyrillic_mixed_with_escapes() {
+        // Escape sequences must still work alongside Cyrillic content.
+        let toks = tok(r#"'оплат\n payouts'"#);
+        let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
+        assert_eq!(s, "оплат\n payouts");
     }
 
     #[test] fn keywords() {

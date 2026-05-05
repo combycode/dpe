@@ -431,6 +431,53 @@ mod tests {
     #[test] fn fn_contains()        { assert!(b("contains('hello world', ['foo', 'world'])")); }
     #[test] fn fn_contains_miss()   { assert!(!b("contains('hello', ['a', 'b'])")); }
 
+    // ─── UTF-8 in literals (regression: inbox 0022) ───────────────────
+    //
+    // Pre-fix the lexer mangled non-ASCII string literals into mojibake,
+    // so a Cyrillic literal in a filter expression never matched a real
+    // Cyrillic value at runtime. Pin the end-to-end behaviour at the
+    // eval level — the user's actual filter shape.
+
+    #[test] fn fn_includes_cyrillic_self_match() {
+        // includes('оплаты', 'оплат') must be true. Pre-fix returned
+        // false because both literals were mojibake but with different
+        // byte counts (the haystack happened to contain extra bytes
+        // from the trailing 'ы' that the needle didn't have).
+        assert!(b("includes('оплаты', 'оплат')"));
+    }
+
+    #[test] fn fn_includes_cyrillic_with_lower() {
+        // The user's expression uses `lower(haystack)` defensively;
+        // for already-lowercase Cyrillic this is a no-op but the
+        // pipeline must still match.
+        assert!(b("includes(lower('оплаты APP4U'), 'оплат')"));
+    }
+
+    #[test] fn fn_includes_cyrillic_negative_no_match() {
+        // Sheet name without 'оплат' must NOT match.
+        assert!(!b("includes('Day Log', 'оплат')"));
+    }
+
+    #[test] fn fn_includes_cyrillic_uppercase_via_lower() {
+        // Uppercase Cyrillic haystack + lower() → lowercased correctly,
+        // matches lowercase needle. Validates Rust's UTF-8-aware
+        // to_lowercase() works end-to-end through the lexer fix.
+        assert!(b("includes(lower('ОПЛАТЫ APP4U'), 'оплат')"));
+    }
+
+    #[test] fn fn_eq_cyrillic_exact_match() {
+        // Exact equality on Cyrillic literal — the simplest possible
+        // path through lexer+eval.
+        let expr = compile("'оплаты APP4U' == 'оплаты APP4U'").unwrap();
+        assert_eq!(evaluate(&expr, &scope()).unwrap(), json!(true));
+    }
+
+    #[test] fn fn_includes_emoji_4byte_utf8() {
+        // 4-byte UTF-8 round-trip — different encoding-length path
+        // from the 2-byte Cyrillic case.
+        assert!(b("includes('rocket 🚀 go', '🚀')"));
+    }
+
     #[test] fn fn_unknown_errors() {
         assert!(matches!(run("bogus(1)").unwrap_err().to_string().as_str(),
             s if s.contains("unknown")));

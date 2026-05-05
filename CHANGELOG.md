@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
-## [2.0.1] — 2026-05-01
+## [2.0.1] — 2026-05-05
 
 Patch release — bug fixes and small CLI ergonomics around the v2.0.0 surface.
 No breaking changes; existing pipelines and config files work unchanged.
@@ -35,6 +35,7 @@ No breaking changes; existing pipelines and config files work unchanged.
 - **`dpe --version`** + **`dpe-dev --version`** now report the binary version. v2.0.0 shipped without `#[command(version)]`; this restores the standard clap-derive flag and resolves the stale `2.0.0-rc1` string in dpe-dev.
 - **`route`** stage's `routes` was a `BTreeMap` and alphabetized YAML declaration order, breaking the documented "first-truthy-channel-wins, in declaration order" semantics. Swapped to `IndexMap`. Regression test added.
 - **dpe-base / dpe-dev Docker images** baked `DPE_STORAGE`/`DPE_TEMP`/`DPE_INPUT`/`DPE_OUTPUT` into the image's `ENV` layer pointing at `/workspace/{...}` — overlay-only paths that vanished on `--rm`. Removed the `ENV` block; the runtime `SessionContext` is the sole source of truth.
+- **Expression DSL** string literals now preserve UTF-8 multi-byte characters. The lexer previously read the source byte-by-byte and cast each byte to `char`, mangling Cyrillic / emoji / other non-ASCII content into mojibake. `includes(lower(v.x), 'оплат')` and similar predicates with non-ASCII literals now match correctly.
 
 ## [2.0.0] — 2026-04-28
 
