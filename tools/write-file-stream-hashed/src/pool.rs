@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use combycode_dpe::pool::{HandleEntry, LruPool};
 
-use crate::{Config, hashidx};
+use crate::{Config, WriteMode, hashidx};
 use crate::hashidx::{HashAlgo, SidecarHeader};
 
 pub(crate) struct Handle {
@@ -51,15 +51,34 @@ impl HandleEntry for Handle {
 
 pub(crate) struct HandlePool {
     inner: LruPool<String, Handle>,
+    /// Paths whose first-open in this process has already truncated.
+    /// Subsequent reopens (e.g. LRU eviction) append, so `truncate`
+    /// mode means "truncate ONCE per file per session" — not "clobber
+    /// on every reopen." See main.rs settings doc for full semantics.
+    truncated: HashSet<String>,
 }
 
 impl HandlePool {
     pub(crate) fn new(cap: usize) -> Self {
-        Self { inner: LruPool::new(cap) }
+        Self { inner: LruPool::new(cap), truncated: HashSet::new() }
     }
 
     pub(crate) fn get_or_open(&mut self, path: &str, cfg: &Config) -> std::io::Result<&mut Handle> {
-        self.inner.get_or_open(path.to_string(), || open_handle(path, cfg))
+        let should_truncate = matches!(cfg.write_mode, WriteMode::Truncate)
+            && !self.truncated.contains(path);
+
+        // Disjoint borrows so the closure can mutate `truncated` while
+        // `inner` lends out the handle reference.
+        let inner = &mut self.inner;
+        let truncated = &mut self.truncated;
+
+        inner.get_or_open(path.to_string(), || {
+            let h = open_handle(path, cfg, should_truncate)?;
+            if should_truncate {
+                truncated.insert(path.to_string());
+            }
+            Ok(h)
+        })
     }
 
     pub(crate) fn close_idle(&mut self, idle_ms: u128) {
@@ -75,13 +94,26 @@ impl HandlePool {
     }
 }
 
-fn open_handle(path: &str, cfg: &Config) -> std::io::Result<Handle> {
+fn open_handle(path: &str, cfg: &Config, truncate: bool) -> std::io::Result<Handle> {
     if cfg.mkdir {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() { std::fs::create_dir_all(parent)?; }
         }
     }
-    let content_file = OpenOptions::new().create(true).append(true).open(path)?;
+    // When `truncate` is set we open with truncate — the existing
+    // sidecar is intentionally NOT cleared here: load_or_rebuild()
+    // below sees a content_size mismatch (sidecar says old N, file is
+    // now 0 bytes) and self-heals by rebuilding from the (now empty)
+    // content, producing an empty hash set.
+    let mut opts = OpenOptions::new();
+    opts.create(true);
+    if truncate {
+        opts.write(true).truncate(true);
+    } else {
+        opts.append(true);
+    }
+    let content_file = opts.open(path)?;
+    // After truncate this is 0; otherwise it's whatever was on disk.
     let content_size = content_file.metadata()?.len();
 
     // Load or rebuild hash set

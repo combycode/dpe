@@ -12,11 +12,22 @@
 //!       "flush_every":        1000,
 //!       "flush_interval_ms":  1000,
 //!       "mkdir":              true,
+//!       "write_mode":         "append" | "truncate",  (default "append")
 //!       "csv_columns":        ["a","b","c"],
 //!       "hash":               "xxhash" | "blake2b",   (default xxhash)
 //!       "hash_field":         null,                   (else use v.<field> as key)
 //!       "sidecar":            true                    (default true — keep idx)
 //!     }
+//!
+//! `write_mode`:
+//!   - `"append"` (default) — file opened in append mode every time.
+//!   - `"truncate"` — truncate on FIRST open per path within this
+//!     process; subsequent reopens (after LRU eviction) append. Reruns
+//!     of the same input produce the same output file content (instead
+//!     of doubling). Note: dedup via the content-hash index is
+//!     orthogonal — clearing the index without truncating still grows
+//!     the file. Use `truncate` when you want the file to be the
+//!     output, not an accumulating log.
 
 use combycode_dpe::prelude::*;
 use combycode_dpe::dpe_run;
@@ -33,6 +44,25 @@ static STATE: std::sync::OnceLock<std::sync::Mutex<State>> = std::sync::OnceLock
 
 struct State { pool: HandlePool, cfg: Config }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteMode { Append, Truncate }
+
+impl WriteMode {
+    fn from_str_or_warn(s: Option<&str>) -> Self {
+        match s {
+            None | Some("append") => WriteMode::Append,
+            Some("truncate")      => WriteMode::Truncate,
+            Some(other) => {
+                eprintln!(
+                    r#"{{"type":"log","level":"warn","msg":"unknown write_mode '{}': must be 'append' or 'truncate'; defaulting to 'append'"}}"#,
+                    other,
+                );
+                WriteMode::Append
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Config {
     pub(crate) default_file: String,
@@ -42,6 +72,7 @@ pub(crate) struct Config {
     pub(crate) flush_every: usize,
     pub(crate) flush_interval_ms: u128,
     pub(crate) mkdir: bool,
+    pub(crate) write_mode: WriteMode,
     pub(crate) csv_columns: Vec<String>,
     pub(crate) algo: HashAlgo,
     pub(crate) hash_field: Option<String>,
@@ -60,6 +91,9 @@ impl Config {
             flush_every: s.get("flush_every").and_then(|v| v.as_u64()).unwrap_or(1_000) as usize,
             flush_interval_ms: s.get("flush_interval_ms").and_then(|v| v.as_u64()).unwrap_or(1_000) as u128,
             mkdir: s.get("mkdir").and_then(|v| v.as_bool()).unwrap_or(true),
+            write_mode: WriteMode::from_str_or_warn(
+                s.get("write_mode").and_then(|v| v.as_str()),
+            ),
             csv_columns: s.get("csv_columns").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                 .unwrap_or_default(),

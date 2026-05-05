@@ -227,3 +227,102 @@ fn csv_format_dedups() {
     ]);
     assert_eq!(read(&p).lines().count(), 2);
 }
+
+// ─── write_mode (regression: inbox 0002) ────────────────────────────────
+//
+// Truncate-on-first-write per session, with sidecar self-heal:
+// truncating the content file makes load_or_rebuild see a content_size
+// mismatch (sidecar header says N bytes, file is now 0) → rebuild from
+// the empty content → empty hash set → fresh sidecar header. Truncate
+// rerun naturally produces fresh content + fresh dedup state.
+
+#[test]
+fn truncate_clears_existing_file_and_resets_dedup() {
+    let d = unique_dir("hashed_truncate_existing");
+    let p = path_in(&d, "out.ndjson");
+
+    // Run 1 — append three rows.
+    let _ = run_tool(json!({"format":"ndjson"}), &[
+        env(&p, json!({"i":1})),
+        env(&p, json!({"i":2})),
+        env(&p, json!({"i":3})),
+    ]);
+    assert_eq!(read(&p).lines().count(), 3);
+
+    // Run 2 — same rows in truncate mode. File contains ONLY these 3
+    // rows (sidecar self-heals via content_size mismatch).
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &[
+        env(&p, json!({"i":1})),
+        env(&p, json!({"i":2})),
+        env(&p, json!({"i":3})),
+    ]);
+    let contents = read(&p);
+    let lines: Vec<_> = contents.lines().collect();
+    assert_eq!(lines.len(), 3, "expected fresh 3-row file after truncate, got {}", lines.len());
+    let rows: Vec<Value> = lines.iter().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(rows, vec![json!({"i":1}), json!({"i":2}), json!({"i":3})]);
+}
+
+#[test]
+fn truncate_does_not_re_truncate_within_session() {
+    let d = unique_dir("hashed_truncate_no_reclobber");
+    let p = path_in(&d, "out.ndjson");
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &[
+        env(&p, json!({"i":1})),
+        env(&p, json!({"i":2})),
+        env(&p, json!({"i":3})),
+    ]);
+    let contents = read(&p);
+    let lines: Vec<_> = contents.lines().collect();
+    assert_eq!(lines.len(), 3, "rows must accumulate after first-row truncate, got: {:?}", lines);
+}
+
+#[test]
+fn rerun_with_truncate_produces_identical_file_size() {
+    let d = unique_dir("hashed_rerun_truncate");
+    let p = path_in(&d, "out.ndjson");
+    let inputs: Vec<Value> = (0..10).map(|i| env(&p, json!({"i": i}))).collect();
+
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &inputs);
+    let first_size = std::fs::metadata(&p).unwrap().len();
+    assert_eq!(read(&p).lines().count(), 10);
+
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &inputs);
+    let second_size = std::fs::metadata(&p).unwrap().len();
+
+    assert_eq!(first_size, second_size, "truncate rerun must produce identical size");
+    assert_eq!(read(&p).lines().count(), 10);
+}
+
+#[test]
+fn rerun_default_append_dedups_via_sidecar() {
+    // Backward-compat: WITHOUT write_mode the existing sidecar-backed
+    // dedup behavior is unchanged — reruns of the same rows do not
+    // grow the file (dedup catches them).
+    let d = unique_dir("hashed_rerun_default");
+    let p = path_in(&d, "out.ndjson");
+    let inputs: Vec<Value> = (0..5).map(|i| env(&p, json!({"i": i}))).collect();
+
+    let _ = run_tool(json!({"format":"ndjson"}), &inputs);
+    assert_eq!(read(&p).lines().count(), 5);
+    let _ = run_tool(json!({"format":"ndjson"}), &inputs);
+    assert_eq!(read(&p).lines().count(), 5);
+}
+
+#[test]
+fn unknown_write_mode_logs_warn_and_defaults_to_append() {
+    let d = unique_dir("hashed_unknown_mode");
+    let p = path_in(&d, "out.ndjson");
+    let _ = run_tool(json!({"format":"ndjson"}), &[env(&p, json!({"prior":1}))]);
+    let (_, stderr) = run_tool(
+        json!({"format":"ndjson","write_mode":"garbage"}),
+        &[env(&p, json!({"new":1}))],
+    );
+    let contents = read(&p);
+    assert!(contents.contains("\"prior\":1"),
+        "expected prior content preserved (append fallback), got: {:?}", contents);
+    assert!(
+        stderr.contains("unknown write_mode") && stderr.contains("garbage"),
+        "expected warn log on stderr, got: {}", stderr,
+    );
+}

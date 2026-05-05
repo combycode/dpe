@@ -31,6 +31,7 @@ No breaking changes; existing pipelines and config files work unchanged.
 
 - **`normalize` tool inline rules / profiles** — settings now accept exactly one of `rulebook: <path>` (existing — external file), `rules: [...]` (new — synthesises a single always-on profile), or `profiles: [...]` (new — full multi-profile rulebook). Settings-level `${VAR}` env-interp + `$prefix` path substitution apply automatically when rules are inline; external rulebook files load fresh from disk and stay stable artefacts.
 - **`normalize` template op** rejects literal `${` at compile time with a fix-pointing message. The `${VAR}` env-interp syntax visually collides with the template op's own `{name}` placeholder syntax — the loud error stops users from writing settings that silently render to `batch_$/raw/{hash}/`.
+- **`write-file-stream` and `write-file-stream-hashed` `pass_through: true`** — when set, after a successful disk write the input envelope is forwarded unchanged via `ctx.output`, so downstream stages can chain off the same stream without an upstream `spread` builtin. Default `false` preserves the existing terminal-sink behaviour. Spec.yaml and module docs updated to reflect the two-mode contract.
 
 ### Changed
 

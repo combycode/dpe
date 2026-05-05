@@ -5,18 +5,35 @@
 //!
 //! Settings (argv[1] JSON):
 //!     {
-//!       "default_file":       "out.ndjson",  (used when v.file missing)
+//!       "default_file":       "out.ndjson",     (used when v.file missing)
 //!       "format":             "ndjson" | "lines" | "csv",
-//!       "max_open":           32,            (LRU cap on open handles)
-//!       "idle_close_ms":      30000,         (close handles idle longer than this)
-//!       "flush_every":        1000,          (flush after this many rows per-file)
-//!       "flush_interval_ms":  1000,          (flush after this much time per-file)
-//!       "mkdir":              true,          (create parent dirs on open)
-//!       "csv_columns":        ["a","b","c"]  (ordered field list for csv mode)
+//!       "max_open":           32,               (LRU cap on open handles)
+//!       "idle_close_ms":      30000,            (close handles idle longer than this)
+//!       "flush_every":        1000,             (flush after this many rows per-file)
+//!       "flush_interval_ms":  1000,             (flush after this much time per-file)
+//!       "mkdir":              true,             (create parent dirs on open)
+//!       "write_mode":         "append" | "truncate",  (default "append" — see notes)
+//!       "csv_columns":        ["a","b","c"],   (ordered field list for csv mode)
+//!       "pass_through":       false            (default false — see notes)
 //!     }
 //!
-//! Output: `meta` envelopes summarising rows_written per file, emitted at
-//! intervals and at shutdown.
+//! `write_mode`:
+//!   - `"append"` (default) — open file in append mode every time. Reruns
+//!     of the same input grow the file. Backward compatible.
+//!   - `"truncate"` — truncate the file on its FIRST open within this
+//!     process's lifetime, then append for every subsequent write to the
+//!     same path (including reopens after LRU eviction). This makes
+//!     reruns idempotent: the output file ends up containing exactly
+//!     this run's rows, not appended on top of previous runs. For
+//!     multi-file routing each path is truncated once on its first
+//!     write — subsequent rows to the same path append, not clobber.
+//!
+//! Output:
+//!   - Terminal sink by default — does NOT emit data envelopes downstream.
+//!   - With `pass_through: true`, the input envelope is forwarded unchanged
+//!     after a successful disk write so downstream stages can chain.
+//!   - `meta` envelopes summarising rows_written per file may be emitted at
+//!     intervals and at shutdown (independent of pass_through).
 
 use combycode_dpe::prelude::*;
 use combycode_dpe::dpe_run;
@@ -37,6 +54,28 @@ struct State {
     cfg: Config,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteMode { Append, Truncate }
+
+impl WriteMode {
+    fn from_str_or_warn(s: Option<&str>) -> Self {
+        match s {
+            None | Some("append")  => WriteMode::Append,
+            Some("truncate")       => WriteMode::Truncate,
+            Some(other) => {
+                // Loud-but-non-fatal: log a warn event and fall back to
+                // append. Append is the historical default — preserves
+                // backward compatibility on typo.
+                eprintln!(
+                    r#"{{"type":"log","level":"warn","msg":"unknown write_mode '{}': must be 'append' or 'truncate'; defaulting to 'append'"}}"#,
+                    other,
+                );
+                WriteMode::Append
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Config {
     default_file: String,
@@ -46,7 +85,9 @@ struct Config {
     flush_every: usize,
     flush_interval_ms: u128,
     mkdir: bool,
+    write_mode: WriteMode,
     csv_columns: Vec<String>,
+    pass_through: bool,
 }
 
 impl Config {
@@ -65,9 +106,13 @@ impl Config {
             flush_interval_ms: s.get("flush_interval_ms").and_then(|v| v.as_u64())
                 .unwrap_or(1_000) as u128,
             mkdir: s.get("mkdir").and_then(|v| v.as_bool()).unwrap_or(true),
+            write_mode: WriteMode::from_str_or_warn(
+                s.get("write_mode").and_then(|v| v.as_str()),
+            ),
             csv_columns: s.get("csv_columns").and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
                 .unwrap_or_default(),
+            pass_through: s.get("pass_through").and_then(|v| v.as_bool()).unwrap_or(false),
         }
     }
 }
@@ -116,6 +161,10 @@ fn process_input(v: Value, settings: &Value, ctx: &mut Context<'_>) {
         let _ = handle.writer.flush();
         handle.rows_since_flush = 0;
         handle.last_flush = Instant::now();
+    }
+
+    if cfg_snapshot.pass_through {
+        ctx.output(v, None, None);
     }
 }
 

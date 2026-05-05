@@ -227,3 +227,223 @@ fn idle_close_frees_handles() {
     std::thread::sleep(Duration::from_millis(5));
     assert_eq!(read_file(&p).lines().count(), 2);
 }
+
+// ─── write_mode (regression: inbox 0002) ────────────────────────────────
+//
+// Pre-fix: file was always opened in append mode. Reruns of the same
+// pipeline doubled the output. Truncate-on-first-write per session is
+// the fix; backward compat preserved by defaulting to "append".
+
+#[test]
+fn truncate_clears_existing_file_on_first_open() {
+    let p = fixture_path("truncate_existing");
+    std::fs::write(&p, "{\"prior\":1}\n{\"prior\":2}\n").unwrap();
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &[
+        env(&p, json!({"new":1})),
+    ]);
+    let lines: Vec<_> = read_file(&p).lines().map(String::from).collect();
+    assert_eq!(lines.len(), 1, "expected only the new row, got: {:?}", lines);
+    assert_eq!(serde_json::from_str::<Value>(&lines[0]).unwrap(), json!({"new":1}));
+}
+
+#[test]
+fn truncate_does_not_re_truncate_within_session() {
+    // Truncate-on-first-write is a per-session promise: rows 2..N to the
+    // same file APPEND, not clobber. Without this, only the last row
+    // would survive.
+    let p = fixture_path("truncate_no_reclobber");
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &[
+        env(&p, json!({"i":1})),
+        env(&p, json!({"i":2})),
+        env(&p, json!({"i":3})),
+    ]);
+    let contents = read_file(&p);
+    let lines: Vec<_> = contents.lines().collect();
+    assert_eq!(lines.len(), 3, "expected all 3 rows after first-row truncate, got: {:?}", lines);
+    assert_eq!(serde_json::from_str::<Value>(lines[0]).unwrap(), json!({"i":1}));
+    assert_eq!(serde_json::from_str::<Value>(lines[2]).unwrap(), json!({"i":3}));
+}
+
+#[test]
+fn truncate_multi_file_routing_truncates_each_once() {
+    // Two different output files, each with prior content. Truncate
+    // mode should clear BOTH on their respective first opens, then
+    // append within each.
+    let pa = fixture_path("trunc_multi_a");
+    let pb = fixture_path("trunc_multi_b");
+    std::fs::write(&pa, "OLD-A\n").unwrap();
+    std::fs::write(&pb, "OLD-B\n").unwrap();
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &[
+        env(&pa, json!({"f":"a","i":1})),
+        env(&pb, json!({"f":"b","i":1})),
+        env(&pa, json!({"f":"a","i":2})),
+        env(&pb, json!({"f":"b","i":2})),
+    ]);
+    let a = read_file(&pa);
+    let b = read_file(&pb);
+    let a_lines: Vec<_> = a.lines().collect();
+    let b_lines: Vec<_> = b.lines().collect();
+    assert_eq!(a_lines.len(), 2);
+    assert_eq!(b_lines.len(), 2);
+    assert!(!a_lines.iter().any(|l| l.contains("OLD-A")));
+    assert!(!b_lines.iter().any(|l| l.contains("OLD-B")));
+}
+
+#[test]
+fn truncate_after_lru_eviction_does_not_retruncate() {
+    // max_open=1 across 2 files forces eviction-and-reopen in the
+    // middle of the run. Each file's FIRST open truncates; reopen
+    // after eviction must APPEND, otherwise routing back-and-forth
+    // across files in truncate mode loses rows on every flip.
+    let pa = fixture_path("trunc_evict_a");
+    let pb = fixture_path("trunc_evict_b");
+    let _ = run_tool(
+        json!({"format":"ndjson","write_mode":"truncate","max_open":1}),
+        &[
+            env(&pa, json!({"f":"a","i":1})),  // open A (truncate), write
+            env(&pb, json!({"f":"b","i":1})),  // evict A, open B (truncate), write
+            env(&pa, json!({"f":"a","i":2})),  // evict B, REOPEN A (append!), write
+            env(&pb, json!({"f":"b","i":2})),  // evict A, REOPEN B (append!), write
+        ],
+    );
+    let a = read_file(&pa);
+    let b = read_file(&pb);
+    let a_lines: Vec<_> = a.lines().collect();
+    let b_lines: Vec<_> = b.lines().collect();
+    assert_eq!(a_lines.len(), 2, "A lost rows on reopen: {:?}", a_lines);
+    assert_eq!(b_lines.len(), 2, "B lost rows on reopen: {:?}", b_lines);
+}
+
+#[test]
+fn rerun_with_truncate_does_not_double_output() {
+    // The headline regression: same input twice in truncate mode should
+    // produce the same file size, not 2×.
+    let p = fixture_path("rerun_truncate");
+    let inputs: Vec<Value> = (0..10).map(|i| env(&p, json!({"i":i}))).collect();
+
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &inputs);
+    let first_size = std::fs::metadata(&p).unwrap().len();
+    let first_lines = read_file(&p).lines().count();
+    assert_eq!(first_lines, 10);
+
+    let _ = run_tool(json!({"format":"ndjson","write_mode":"truncate"}), &inputs);
+    let second_size = std::fs::metadata(&p).unwrap().len();
+    let second_lines = read_file(&p).lines().count();
+
+    assert_eq!(first_size, second_size, "truncate mode should produce identical file size on rerun");
+    assert_eq!(second_lines, 10, "truncate mode should not append over previous run");
+}
+
+#[test]
+fn rerun_default_append_doubles_output() {
+    // Confirms backward compat: WITHOUT write_mode set, behavior is
+    // unchanged — second run appends on top of the first. This is the
+    // pre-fix behavior the bug reporter saw, preserved as default.
+    let p = fixture_path("rerun_default");
+    let inputs: Vec<Value> = (0..5).map(|i| env(&p, json!({"i":i}))).collect();
+    let _ = run_tool(json!({"format":"ndjson"}), &inputs);
+    assert_eq!(read_file(&p).lines().count(), 5);
+    let _ = run_tool(json!({"format":"ndjson"}), &inputs);
+    assert_eq!(read_file(&p).lines().count(), 10);
+}
+
+// ─── pass_through (regression: inbox 0015) ──────────────────────────
+//
+// Default (false / absent) → terminal sink: writes to disk, emits
+// nothing on stdout. With pass_through=true → each successful write is
+// followed by ctx.output(v), so downstream stages can chain off the
+// same envelope without an upstream `spread` builtin.
+
+fn data_envelopes(stdout: &[Value]) -> Vec<&Value> {
+    stdout.iter()
+        .filter(|e| e.get("t").and_then(|t| t.as_str()) == Some("d"))
+        .collect()
+}
+
+#[test]
+fn pass_through_default_off_emits_no_data() {
+    // Default behaviour: file written, but stdout has no data envelopes
+    // → terminal sink, downstream stages would receive nothing.
+    let p = fixture_path("pt_default_off");
+    let (stdout, _) = run_tool(json!({"format":"ndjson"}), &[
+        env(&p, json!({"a":1})),
+        env(&p, json!({"a":2})),
+    ]);
+    // Disk write happened.
+    assert_eq!(read_file(&p).lines().count(), 2);
+    // Stdout has zero data envelopes (terminal sink behaviour).
+    assert!(data_envelopes(&stdout).is_empty(),
+        "default (pass_through absent) must NOT emit data, got: {:?}", stdout);
+}
+
+#[test]
+fn pass_through_explicit_false_emits_no_data() {
+    // Explicit false matches absent.
+    let p = fixture_path("pt_explicit_false");
+    let (stdout, _) = run_tool(
+        json!({"format":"ndjson","pass_through":false}),
+        &[env(&p, json!({"a":1}))],
+    );
+    assert_eq!(read_file(&p).lines().count(), 1);
+    assert!(data_envelopes(&stdout).is_empty());
+}
+
+#[test]
+fn pass_through_true_emits_one_data_per_input() {
+    // pass_through=true → one ctx.output per successful write, with
+    // the input v unchanged on the wire.
+    let p = fixture_path("pt_true");
+    let (stdout, _) = run_tool(
+        json!({"format":"ndjson","pass_through":true}),
+        &[
+            env(&p, json!({"a":1})),
+            env(&p, json!({"a":2})),
+            env(&p, json!({"a":3})),
+        ],
+    );
+    // Disk write still happened.
+    assert_eq!(read_file(&p).lines().count(), 3);
+    // Three data envelopes downstream — the chain is unblocked.
+    let data: Vec<&Value> = data_envelopes(&stdout);
+    assert_eq!(data.len(), 3, "expected 3 pass-through envelopes, got: {:?}", stdout);
+    // v is the SAME envelope payload that came in (file + row preserved).
+    let v0 = data[0].get("v").unwrap();
+    assert_eq!(v0.get("file").unwrap().as_str().unwrap(), p);
+    assert_eq!(v0.get("row").unwrap(), &json!({"a":1}));
+    let v2 = data[2].get("v").unwrap();
+    assert_eq!(v2.get("row").unwrap(), &json!({"a":3}));
+}
+
+#[test]
+fn pass_through_does_not_emit_on_serialize_error() {
+    // csv format with no columns → serialize_row errors → ctx.error,
+    // NOT ctx.output. Pass-through must not fire on failed writes
+    // (otherwise downstream gets envelopes for rows that were never
+    // written to disk).
+    let p = fixture_path("pt_no_emit_on_err");
+    let (stdout, stderr) = run_tool(
+        json!({"format":"csv","pass_through":true}),
+        &[env(&p, json!({"a":1}))],
+    );
+    assert!(stderr.contains("csv_columns"));
+    assert!(data_envelopes(&stdout).is_empty(),
+        "must not emit pass-through envelope when write failed");
+}
+
+#[test]
+fn unknown_write_mode_logs_warn_and_defaults_to_append() {
+    let p = fixture_path("unknown_mode");
+    std::fs::write(&p, "PRIOR\n").unwrap();
+    let (_, stderr) = run_tool(
+        json!({"format":"ndjson","write_mode":"garbage"}),
+        &[env(&p, json!({"new":1}))],
+    );
+    // Behavior was append (prior content preserved).
+    let contents = read_file(&p);
+    assert!(contents.starts_with("PRIOR\n"), "expected append fallback, got: {:?}", contents);
+    // Warning surfaced via the framework log envelope.
+    assert!(
+        stderr.contains("unknown write_mode") && stderr.contains("garbage"),
+        "expected warn log on stderr, got: {}", stderr,
+    );
+}

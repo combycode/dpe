@@ -29,10 +29,30 @@ settings:
       minimum: 1
       default: 1000
       description: "Flush after N rows per file"
+    write_mode:
+      type: string
+      enum: ["append", "truncate"]
+      default: "append"
+      description: |
+        How the file is opened on its FIRST write within this process.
+        - "append" (default): file opened in append mode every time. Reruns grow it.
+        - "truncate": truncate on first open per path; subsequent reopens
+          (after LRU eviction) APPEND. Reruns produce identical file contents
+          rather than doubling. Backward-compat default is "append".
     csv_header:
       type: array
       items: { type: string }
       description: "csv only — column order; first write to each file emits header row"
+    pass_through:
+      type: boolean
+      default: false
+      description: |
+        When `false` (default), this stage is a TERMINAL sink: it writes
+        the row to disk and emits nothing to stdout. Downstream stages
+        cannot chain off it.
+        When `true`, after a successful disk write the input envelope is
+        forwarded unchanged via ctx.output, so downstream stages can
+        chain on the same stream without an upstream `spread` builtin.
 
 input:
   description: "Envelope to append. If `v.row` is absent, the whole `v` is written."
@@ -44,4 +64,7 @@ input:
       description: "Payload to write (any JSON value or object matching csv_header)"
 
 output:
-  description: "Pass-through (the same envelope), so downstream stages can chain."
+  description: |
+    Terminal sink by default — does NOT emit to stdout. Set
+    `pass_through: true` to forward each input envelope unchanged after
+    the disk write, so downstream stages can chain.

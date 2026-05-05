@@ -34,6 +34,16 @@ settings:
       type: integer
       minimum: 1
       default: 1000
+    write_mode:
+      type: string
+      enum: ["append", "truncate"]
+      default: "append"
+      description: |
+        How the content file is opened on its FIRST write within this process.
+        - "append" (default): file opened in append mode; dedup catches reruns.
+        - "truncate": truncate on first open per path; sidecar self-heals via
+          content_size mismatch → rebuilds an empty hash set. Use this when
+          you want the file to BE the run's output, not an accumulating log.
 
 input:
   description: "Same shape as write-file-stream."
