@@ -96,4 +96,37 @@ impl<'a> Context<'a> {
     pub fn hash_file(&self, filepath: &str) -> Option<String> {
         envelope::hash_file(filepath, 65536)
     }
+
+    /// Cache the result of an expensive computation under
+    /// `$DPE_STORAGE/<namespace>/<hash>.json`. Honors the runner's
+    /// `DPE_CACHE_MODE` env (use / refresh / bypass / off):
+    ///
+    ///   - use      (default) — read cache if present, else produce + write
+    ///   - refresh  — always produce, overwrite cache
+    ///   - bypass   — produce, skip both read and write
+    ///   - off      — same as bypass
+    ///
+    /// `key` is canonical-JSON-hashed (blake2b, 32 hex chars). Compose
+    /// it from anything that determines output equivalence: file
+    /// content hash from `ctx.hash_file(...)`, settings subset, page
+    /// index, model id — anything that, if changed, should produce a
+    /// different cached entry.
+    ///
+    /// If `$DPE_STORAGE` isn't set (e.g. tool invoked outside a
+    /// pipeline), cache is silently disabled — every call goes through
+    /// `produce`.
+    ///
+    /// Producer errors propagate; failed runs do NOT poison the cache.
+    pub fn cached<T, F>(
+        &self,
+        namespace: &str,
+        key: &Value,
+        produce: F,
+    ) -> std::io::Result<T>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+        F: FnOnce() -> std::io::Result<T>,
+    {
+        crate::cache::cached_impl(namespace, key, produce)
+    }
 }

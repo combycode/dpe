@@ -11,6 +11,7 @@
  *   });
  */
 
+export type { CacheMode } from './cache';
 export type { QueueItem, RuntimeLike } from './context';
 export { Context, Memory } from './context';
 export type { DataEnvelope, Envelope, JSONValue, MetaEnvelope } from './envelope';

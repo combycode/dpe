@@ -45,6 +45,15 @@ pub fn parse_settings() -> Value {
 /// Main run loop.
 pub fn run(tool: Tool) {
     let settings = parse_settings();
+    // `accept_meta: true` in settings → the read loop dispatches t:"m"
+    // envelopes to `process_input` alongside t:"d" (instead of skipping
+    // them). Default false preserves the historical behavior — meta
+    // envelopes only matter to tools that explicitly opt in (typically
+    // sinks like write-file-stream when used as a meta-output target).
+    // Read once at startup; can't change at runtime.
+    let accept_meta = settings.get("accept_meta")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let mut memory = Memory::new();
     let mut queue: Vec<QueueItem> = Vec::new();
 
@@ -75,7 +84,12 @@ pub fn run(tool: Tool) {
             None => continue,
         };
 
-        if envelope.get("t").and_then(|t| t.as_str()) != Some("d") {
+        // Default: only data envelopes. With `accept_meta: true` the
+        // tool ALSO receives meta envelopes through `process_input`.
+        // Anything else (unknown `t`, missing `t`) still skipped.
+        let t = envelope.get("t").and_then(|t| t.as_str());
+        let pass = t == Some("d") || (accept_meta && t == Some("m"));
+        if !pass {
             continue;
         }
 

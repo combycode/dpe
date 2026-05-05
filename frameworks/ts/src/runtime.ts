@@ -66,6 +66,13 @@ class Runtime implements RuntimeLike {
     if (opts.maxDrainIterations) this.drainLimit = opts.maxDrainIterations;
 
     this.settings = parseSettings();
+    // `accept_meta: true` in settings → the read loop dispatches t:"m"
+    // envelopes to the input processor alongside t:"d" (instead of
+    // skipping). Default false preserves historical behavior — meta
+    // envelopes only matter to tools that explicitly opt in (typically
+    // sinks like write-file-stream when used as a meta-output target).
+    const s = this.settings as { accept_meta?: unknown } | null;
+    const acceptMeta = !!(s && typeof s === 'object' && s.accept_meta === true);
 
     // SIGTERM / SIGINT → graceful shutdown (stop reading, drain, exit)
     const onSignal = () => {
@@ -81,7 +88,10 @@ class Runtime implements RuntimeLike {
 
       const env = parseEnvelope(line);
       if (env === null) continue;
-      if (env.t !== 'd') continue;
+      // Default: only data envelopes. With `accept_meta: true` the
+      // tool ALSO receives meta envelopes through the input
+      // processor. Anything else still skipped.
+      if (env.t !== 'd' && !(acceptMeta && env.t === 'm')) continue;
 
       const d = env as DataEnvelope;
       // Emit an `input` event BEFORE the processor runs so the runner

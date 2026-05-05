@@ -71,6 +71,14 @@ class Runtime:
 
         # Parse settings
         self.settings = _parse_settings()
+        # `accept_meta: true` in settings → the read loop dispatches t:"m"
+        # envelopes to process_input alongside t:"d" (instead of skipping).
+        # Default false preserves historical behavior — meta envelopes only
+        # matter to tools that explicitly opt in (typically sinks like
+        # write-file-stream when used as a meta-output target).
+        accept_meta = bool(
+            isinstance(self.settings, dict) and self.settings.get("accept_meta") is True
+        )
 
         # Main stdin loop
         for line in sys.stdin:
@@ -81,8 +89,10 @@ class Runtime:
             if envelope is None:
                 continue
 
-            # Skip non-data lines
-            if envelope.get("t") != "d":
+            # Default: only data envelopes. With accept_meta=True, also
+            # accept t:"m". Anything else (unknown / missing t) skipped.
+            t = envelope.get("t")
+            if t != "d" and not (accept_meta and t == "m"):
                 continue
 
             id = envelope.get("id", "")

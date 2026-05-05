@@ -19,6 +19,7 @@
 
 pub mod accumulators;
 pub mod atomic;
+pub mod cache;
 pub mod context;
 pub mod envelope;
 pub mod polling;

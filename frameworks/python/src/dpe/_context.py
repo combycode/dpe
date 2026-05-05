@@ -1,6 +1,10 @@
 """Context object — passed to every processor invocation."""
 
+from collections.abc import Callable
+from typing import Any, TypeVar
+
 from dpe._accumulators import Memory
+from dpe._cache import cached_impl
 from dpe._envelope import (
     hash_file,
     hash_string,
@@ -11,6 +15,8 @@ from dpe._envelope import (
     write_stats,
     write_trace,
 )
+
+T = TypeVar("T")
 
 
 class Context:
@@ -107,3 +113,38 @@ class Context:
     def hash_file(self, filepath: str, algorithm: str = "blake2b") -> str | None:
         """Hash file content in chunks. Returns hex string or None on error."""
         return hash_file(filepath, algorithm)
+
+    def cached(
+        self,
+        namespace: str,
+        key: Any,
+        produce: Callable[[], T],
+    ) -> T:
+        """Cache the result of `produce()` under
+        `$DPE_STORAGE/<namespace>/<hash>.json`.
+
+        Honors the runner's `DPE_CACHE_MODE` env:
+          - use      (default) -- read cache if present, else produce + write
+          - refresh  -- always produce, overwrite cache
+          - bypass   -- produce, skip both read and write
+          - off      -- same as bypass
+
+        `key` is canonical-JSON-hashed (blake2b, first 32 hex chars).
+        Compose it from whatever determines output equivalence.
+
+        If `$DPE_STORAGE` isn't set (e.g. tool invoked outside a
+        pipeline), cache is silently disabled — every call produces.
+
+        Producer errors propagate; failed runs do NOT poison the cache.
+
+        Example:
+            result = ctx.cached(
+                "doc-converter",
+                {"file_hash": ctx.hash_file(v["path"]),
+                 "settings": settings,
+                 "page": page_idx},
+                lambda: provider.convert_page(...),
+            )
+            ctx.output(result)
+        """
+        return cached_impl(namespace, key, produce)

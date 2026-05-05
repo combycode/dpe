@@ -14,6 +14,7 @@
  *   ctx.hashFile(path)
  */
 
+import { cachedImpl } from './cache';
 import type { JSONValue } from './envelope';
 import {
   hashFile,
@@ -112,6 +113,42 @@ export class Context {
 
   hashFile(filepath: string): Promise<string | undefined> {
     return hashFile(filepath);
+  }
+
+  /**
+   * Cache the result of an expensive computation under
+   * `$DPE_STORAGE/<namespace>/<hash>.json`. Honors the runner's
+   * `DPE_CACHE_MODE` env (use / refresh / bypass / off):
+   *   - use      (default) — read cache if present, else produce + write
+   *   - refresh  — always produce, overwrite cache
+   *   - bypass   — produce, skip both read and write
+   *   - off      — same as bypass
+   *
+   * `key` is canonical-JSON-hashed (blake2b-256, first 32 hex chars).
+   * Compose it from whatever determines output equivalence: settings
+   * subset, content hash from `ctx.hashFile(...)`, page index, model
+   * id — anything that, if changed, should produce a different result.
+   *
+   * If `$DPE_STORAGE` isn't set (e.g. tool invoked outside a pipeline),
+   * cache is silently disabled — every call goes through `produce`.
+   *
+   * Returns the producer's result either way (cache hit or fresh).
+   * Producer errors propagate; failed runs do NOT poison the cache.
+   *
+   * @example
+   *   const result = await ctx.cached(
+   *     "doc-converter",
+   *     { fileHash: await ctx.hashFile(v.path), settings, page },
+   *     () => provider.convertPage(...),
+   *   );
+   *   ctx.output(result);
+   */
+  cached<T extends JSONValue>(
+    namespace: string,
+    key: unknown,
+    produce: () => T | Promise<T>,
+  ): Promise<T> {
+    return cachedImpl(namespace, key, produce);
   }
 }
 
