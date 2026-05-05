@@ -59,8 +59,10 @@ That's it. Each stage is a separate OS process; the runner wires stdout→stdin 
 | [Writing pipelines](writing-pipelines.md) | author YAML variants: linear, fan-in, route, filter, replicas, dedup |
 | [Expressions](expressions.md) | route / filter / condition expressions in the DSL |
 | [Path prefixes](path-prefixes.md) | `$input` / `$output` / `$configs` / `$storage` / `$temp` / `$session` |
-| [CLI reference](cli.md) | `dpe init / run / check / tools / install / config / logs / monitor` |
+| [CLI reference](cli.md) | `dpe init / run / check / tools / install / config / log / logs / monitor` — full flag reference + run --json --stats wire format |
 | [Session artefacts](sessions.md) | what lands in `sessions/<id>/`: trace, errors, journal, stages.json |
+| [Editor / programmatic integration](editor-integration.md) | `dpe run --json --stats` event stream, `dpe log --stage`, `dpe check --plan` — what consumers can rely on |
+| [Caching](caching.md) | `ctx.cached(...)` — skip expensive work (LLM calls, big parses) when the same inputs have been seen before |
 | [Tools overview](tools/README.md) | standard-tool catalogue + tool contract |
 | [Frameworks](frameworks.md) | write your own tool in Rust / Python / TypeScript |
 | [Authoring a tool](authoring-a-tool.md) | one-command scaffold + headless build from a `spec.yaml` |

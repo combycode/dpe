@@ -1,13 +1,14 @@
 # Built-in stages
 
-Four reserved tool names resolve to runner-internal processors: no child process, in-memory execution, zero IPC overhead.
+Five reserved tool names resolve to runner-internal processors: no child process, in-memory execution, zero IPC overhead.
 
 - [`route`](#route) — first-truthy channel dispatch
 - [`filter`](#filter) — keep / drop by expression
 - [`dedup`](#dedup) — drop duplicates by composite key with persistent index
 - [`group-by`](#group-by) — bucket envelopes by key until a trigger emits the merged group
+- [`spread`](#spread) — broadcast every envelope to all downstream consumers
 
-All play nicely with one another via `tokio::io::duplex` bridges, so chains like `route → filter → dedup → group-by → spawned` work with no passthrough helpers.
+All play nicely with one another via `tokio::io::duplex` bridges, so chains like `spread → filter → route → group-by → spawned` work with no passthrough helpers.
 
 ---
 
@@ -337,3 +338,85 @@ stages:
 ```
 
 Input rows with `v.source` equal to `"TRY"` or `"EUR"` get merged into one document per `day` with `v.ccy.TRY` + `v.ccy.EUR` sub-documents.
+
+---
+
+## `spread`
+
+Broadcasts every envelope from a single upstream to **every** downstream consumer.
+Pure topology fan-out — no settings, no expressions, no channels. The DAG primitive that route is NOT.
+
+### When to use it
+
+`route` picks ONE channel per envelope (first-truthy-wins). When you need the **same** envelope to reach multiple downstream stages — e.g. one branch sinks every classified row to a per-type ndjson while another filters the same stream for a batch summary — that's `spread`.
+
+```yaml
+classify:
+  tool: classify
+  settings: { ... }
+  input: $input
+
+# Broadcast classified envelopes to every consumer:
+fan-classified:
+  tool: spread
+  input: classify
+
+# Each consumer receives the FULL classified stream:
+sink-per-type:
+  tool: route
+  routes:
+    contracts: "v.class.category == 'CONTRACT'"
+    other: "true"
+  input: fan-classified
+
+filter-batch:
+  tool: filter
+  expression: "v.class.data.batch == ${BATCH}"
+  input: fan-classified
+
+write-summary:
+  tool: write-file-stream
+  settings: { default_file: "$output/all-classified.ndjson", format: ndjson }
+  input: fan-classified
+```
+
+In this graph, every envelope from `classify` flows to ALL THREE downstream stages — `sink-per-type`, `filter-batch`, `write-summary`. Without `spread`, the runner would reject the multi-consumer DAG.
+
+### Settings
+
+None. `spread` is purely structural.
+
+```yaml
+fan-out:
+  tool: spread
+  input: upstream    # single upstream stage
+  # No `settings:`, `routes:`, `expression:`, etc.
+```
+
+### How fan-out is realised
+
+Internally each consumer registration allocates a fresh `tokio::io::duplex` pair: spread's task reads from its single upstream and writes each line to every registered duplex's write half. Consumers read from their respective read halves. One consumer pipe closing does NOT block the others — `spread` continues to write to surviving consumers.
+
+### Comparison with `route`
+
+| Property | `route` | `spread` |
+|---|---|---|
+| Per-envelope dispatch | ONE channel (first-truthy) | ALL consumers |
+| Channels in YAML | `routes: { name: "expr", ... }` | none |
+| Multi-consumer DAG allowed | yes (one consumer per channel) | yes (all consumers get every envelope) |
+| Drops on no-match | yes (or `on_error` policy) | n/a (no matching) |
+
+### Counters
+
+`rows_in` increments per upstream line. `rows_out` increments **once per envelope**, not once per consumer — the counter reflects the logical fan-out (one envelope through), not the inflated N copies. Per-consumer write failures bump `errors`.
+
+### Errors
+
+- **No downstream consumers** — at least one stage must reference the spread as `input:`. Pre-flight check in `BuiltinSpread::compile`; surfaces as `spread '<name>' has no downstream consumers — at least one stage must reference it as 'input:'`.
+- **Consumer pipe closes early** — counted in `errors`, broadcast continues to survivors. The spread does NOT abort the whole stream when one consumer dies.
+
+### What NOT to use spread for
+
+- **Conditional routing** — use `route`. spread broadcasts unconditionally.
+- **Stream replication for parallelism** — use `replicas` on the consumer stage instead. spread duplicates the data; replicas split it.
+- **Persistence / checkpoints** — spread is in-memory only; per-consumer pipes don't survive restart.

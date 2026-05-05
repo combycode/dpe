@@ -137,7 +137,77 @@ unique:
 
 Computes a composite key from path expressions, keeps an in-memory `HashSet<u64>` + persistent binary index at `$session/index-<name>.bin`. First occurrence wins; duplicates are dropped / traced / meta'd / errored.
 
+### Toggle (builtin)
+
+```yaml
+contract-gate:
+  tool: toggle
+  input: contract-doc-converter
+  settings:
+    env: SKIP_CONTRACTS           # name of env var to check
+    value: "1"                    # OR values: ["1","yes","true"]
+    mode: off                     # default "on"
+```
+
+Env-gated 1→1 passthrough. Transparent by default; pass-all or drop-all per env match. Decision is taken once at plan-compile time from the env source — per-envelope cost is byte-copy (pass) or constant-time skip (drop). `dpe check --plan` records the resolved decision in the plan JSON: `{"builtin": "toggle", "action": "pass" | "drop"}`.
+
+| `mode` | env matches | env doesn't match |
+|---|---|---|
+| `on` (default) | pass | drop |
+| `off` | drop | pass |
+
+Use to turn whole branches on/off per run without copying the variant. `value` and `values` are mutually exclusive (one-of match); `env` alone (no `value`/`values`) → matches when env is set to any non-empty value; no `env` → always pass-through.
+
 **Combinations all work:** builtin → builtin chains, replicas → filter, route → dedup → spawned, fan-in across any of the above. The runner inserts in-memory `tokio::io::duplex` bridges between in-process stages so nothing needs a physical pipe for the builtin-to-builtin hops.
+
+---
+
+## Per-stage state machine
+
+Each stage has its own lifecycle independent of the pipeline-level
+state. Surfaced on the wire by `dpe run --stats` (positional
+`[state, ...]` array) and `dpe status` (`state` field per stage entry).
+
+```
+PENDING ──┬──► RUNNING ──┬──► SUCCEEDED
+          │              │
+          │              ├──► FAILED
+          │              │
+          │              └──► CANCELLED
+          │
+          └──► CANCELLED  (run stopped before any envelope reached)
+```
+
+| State | Meaning | When transitioned |
+|---|---|---|
+| `pending` | Stage is wired but no envelope has arrived yet | Initial state for every stage |
+| `running` | At least one input envelope seen and stage hasn't exited | Derived from `rows_in > 0` (no separate event) |
+| `succeeded` | Spawned child exited 0, OR builtin task returned `Ok(_)` | Observed when child reaped at end-of-run, or builtin wiring task completes |
+| `failed` | Child exited non-zero, builtin returned `Err(_)`, OR `errors > 0` at terminal time | Same hooks as `succeeded`, opposite outcome |
+| `cancelled` | User-initiated stop reached this stage before it finished | Reconciliation pass after the executor returns sets any non-terminal stage to this when the run was cancelled |
+
+Pipeline-level state (`idle` / `running` / `paused` / `stopping` /
+`stopped` / `failed`) is separate — controls runner-wide lifecycle.
+
+---
+
+## Per-stage counters
+
+Every stage tracks four counters in memory (`StageCounters` in
+`runner/src/stderr.rs`). All four are surfaced to consumers via:
+- `journal.json` (per-stage entry, on disk)
+- `dpe run --stats` snapshot (compact 5-tuple `[state, in, out, meta, errors]`)
+- `dpe status` (StageStatus struct over the control socket)
+
+| Counter | Source | What it counts |
+|---|---|---|
+| `rows_in` | `{"type":"input"}` events on stage stderr | Envelopes the stage **received** from stdin. The framework emits `input` once per parsed stdin envelope, before `process_input` runs. Lights up for terminal sinks (no `ctx.output()`) and pass-through tools — invisible to a `rows_out`-only counter |
+| `rows_out` | `{"type":"trace", "channel":"data"}` (or unset channel) | Data envelopes **emitted** to stdout. Runner counts `ctx.output()` via the trace event. `channel:"data"` is the new-tools default; missing `channel` is treated as data for backward compat |
+| `meta` | `{"type":"trace", "channel":"meta"}` | Meta envelopes emitted via `ctx.meta()`. Separate counter so meta noise doesn't inflate `rows_out` for tools that emit summaries |
+| `errors` | `{"type":"error"}` | Errors emitted via `ctx.error()`. Persisted to `<session>/logs/<stage>_errors.log` with `t` and `sid` injected by the runner |
+
+Builtins (route / filter / dedup / group_by) feed into the same
+counters from in-process executor wiring, not via stderr.
 
 ---
 
@@ -185,7 +255,9 @@ Each language framework (Rust / Python / TS) handles:
 1. Parse argv[1] → settings object.
 2. Read stdin line by line, parse each envelope, dispatch to `process_input(v, settings, ctx)`.
 3. Provide `ctx` with `.output()`, `.trace()`, `.log()`, `.error()`, `.stats()`, `.emit()`, `.drain()`, `.meta()`, `.hash()`.
-4. **On every `ctx.output()`**, emit a merged `{"type":"trace",id,src,labels}` event to stderr so the runner can build the provenance chain. Clears the label bag after.
-5. Gracefully exit on stdin EOF or SIGTERM.
+4. Per stdin envelope, emit `{"type":"input", id, src}` to stderr **before** the processor runs (drives `rows_in`).
+5. **On every `ctx.output()`**, emit `{"type":"trace", id, src, labels, channel:"data"}` to stderr so the runner can build the provenance chain (drives `rows_out`). Clears the label bag after.
+6. **On every `ctx.meta()`**, emit `{"type":"trace", id, src, labels:{}, channel:"meta"}` (drives `meta` counter; the meta envelope itself goes to stdout).
+7. Gracefully exit on stdin EOF or SIGTERM.
 
 You almost never implement any of that yourself — the framework does it. See [Frameworks](frameworks.md).

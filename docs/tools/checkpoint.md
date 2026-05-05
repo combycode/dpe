@@ -1,6 +1,9 @@
 # checkpoint
 
-Buffer stdin to disk; release to stdout only after all `wait_for_gates[]` report `predicate_met: true`. Use it to hold downstream work until an upstream phase finishes.
+Two distinct uses, same tool:
+
+1. **Gated barrier** — buffer stdin to disk, release to stdout only after every gate in `wait_for_gates[]` reports `predicate_met: true`. Pair with `gate` to hold a downstream branch until an upstream phase finishes.
+2. **Drain barrier** — set `wait_for_gates: []` (or omit it). Buffers everything to disk, then releases as one burst the moment upstream EOFs. Useful as a barrier-then-replay primitive on its own — no `gate` stage needed.
 
 Repo: `dpe-tool-checkpoint` (Rust). Tool name: `checkpoint`.
 
@@ -33,8 +36,8 @@ hold:
   input: upstream
 ```
 
-- `wait_for_gates` — all gates must show `predicate_met: true` for release. An empty list releases immediately after ingestion (spool still populated; effectively a deterministic drain barrier).
-- `poll_ms` — how often to re-read each gate file. Low = snappier release but more FS reads; 100 ms is a good default.
+- `wait_for_gates` — all gates must show `predicate_met: true` for release. An empty list (or the field omitted entirely) releases the spool immediately after upstream EOF — see [Drain barrier](#drain-barrier-no-gates) below.
+- `poll_ms` — how often to re-read each gate file. Low = snappier release but more FS reads; 100 ms is a good default. Ignored when `wait_for_gates` is empty.
 
 ## Spool files
 
@@ -81,18 +84,32 @@ hold:
 
 Release happens only once BOTH gates report done. Useful when two independent prepare-stages must finish before a joint step.
 
-### Release immediately after upstream EOF
+### Drain barrier (no gates)
 
 ```yaml
-serialize-all:
+drain-and-flow:
   tool: checkpoint
   settings:
-    name:           drain-then-flow
-    wait_for_gates: []
-  input: source
+    name: drain                       # spool subdir; required even without gates
+    # wait_for_gates: []              # absent or empty — drain mode
+  input: upstream-chain
 ```
 
-No gates to wait on. The effect is: ingest everything, then release as one burst. Useful when downstream needs to see the full stream in order before emitting anything (like a sort-before-emit).
+With no gates configured, the wait phase returns immediately after stdin EOF. The pipeline therefore behaves as:
+
+1. Ingest every envelope from `upstream-chain` to disk while it streams.
+2. The moment upstream EOFs (its whole chain has finished), flush the spool to stdout in a single burst.
+3. Downstream of `drain-and-flow` runs only AFTER all upstream work is done.
+
+Use cases:
+
+- **Writes-before-read coordination** — a `spread` fans the same stream into a `write-file-stream` sink AND a downstream reader; the reader is wired through a drain checkpoint. Reader starts only after every write has flushed, no race.
+- **Sort-before-emit** — pipe through a stage that sorts in memory once it sees EOF; the checkpoint guarantees the sorter receives the complete stream before emitting.
+- **Sequencing dependent phases without gates** — when the only signal you need is "phase 1 finished", no need to author a `gate` stage just to hold phase 2.
+
+Cost: every envelope round-trips through `<spool_dir>/<name>/buf.ndjson`. Memory bounded by disk, not RAM. Latency ≈ full upstream completion time. The spool is deleted after release.
+
+If you need multiple drain checkpoints in one variant, give each a distinct `name` (the spool path is `<spool_dir>/<name>/`).
 
 ## Behavior notes
 

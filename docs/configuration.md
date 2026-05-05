@@ -4,9 +4,10 @@
 
 1. `--config <path>` — CLI flag
 2. `DPE_CONFIG` — env var pointing at a file
-3. `<dpe-binary-dir>/config.toml` — portable installs (e.g. USB sticks, CI sandboxes)
+3. `<cwd>/config.toml` — pipeline-local override (auto-picks when running from a pipeline dir; **added v2.0.1**)
 4. `~/.dpe/config.toml` — standard install
-5. Built-in defaults if none of the above exist
+5. `<dpe-binary-dir>/config.toml` — portable installs (e.g. USB sticks, CI sandboxes)
+6. Built-in defaults if none of the above exist
 
 Everything is optional. An empty file yields the same behavior as no file.
 
@@ -24,11 +25,18 @@ control_pipe = ""
 logger_pipe  = ""
 
 [trace]
-max_events             = 10000
-flush_ms               = 1000
-max_segment_bytes      = 268435456
+max_events             = 10000      # in-memory buffer cap
+flush_ms               = 1000       # periodic flush of trace.N.ndjson
+max_segment_bytes      = 268435456  # 256 MiB rotation
 max_labels_per_record  = 10
 max_labels_chars_total = 1000
+channel_capacity       = 100000     # mpsc channel size; overflow drops events
+
+# Shared session log writer (`$session/log.ndjson`). Added v2.0.2.
+[log_sink]
+flush_ms          = 250             # periodic BufWriter flush — keeps `dpe log --follow` responsive
+channel_capacity  = 4096            # mpsc channel size
+tail_default      = 50              # default --tail N for `dpe log <session>`
 
 [cache]
 default_mode = "use"         # use | refresh | bypass | off
@@ -41,6 +49,14 @@ sigterm_grace_ms = 10000
 
 [lifecycle]
 recommended_max_sessions = 50
+
+# Internal runtime tuning. Most users never touch this. Added v2.0.1+.
+[runtime]
+journal_flush_ms     = 2000        # how often `journal.json` is flushed during a run
+control_channel_cap  = 32          # control-command channel size
+duplex_buf_bytes     = 65536       # in-process tokio::io::duplex bridge buffer
+monitor_poll_ms      = 500         # `dpe monitor` + `dpe log --follow` poll cadence
+http_timeout_secs    = 120         # `dpe install` HTTP timeout
 
 # Dev-specific — consumed by dpe-dev, ignored by dpe runner
 [dev]
@@ -59,6 +75,21 @@ tools_registries = [
     "/opt/dpe/bin/catalog.json",     # default, ships with installer
 ]
 ```
+
+## ENV-var overrides
+
+Every numeric knob in `[trace]`, `[log_sink]`, and `[runtime]` is
+ENV-overridable for deploy-time tuning without editing config.toml:
+
+| Var | Overrides |
+|---|---|
+| `DPE_TRACE_FLUSH_MS`, `DPE_TRACE_MAX_EVENTS`, `DPE_TRACE_MAX_SEGMENT_BYTES`, `DPE_TRACE_MAX_LABELS`, `DPE_TRACE_MAX_LABEL_CHARS`, `DPE_TRACE_CHANNEL_CAPACITY` | `[trace]` knobs |
+| `DPE_LOG_SINK_FLUSH_MS`, `DPE_LOG_SINK_CHANNEL_CAPACITY`, `DPE_LOG_TAIL_DEFAULT` | `[log_sink]` knobs |
+| `DPE_JOURNAL_FLUSH_MS`, `DPE_MONITOR_POLL_MS`, `DPE_DUPLEX_BUF_BYTES`, `DPE_HTTP_TIMEOUT_SECS`, `DPE_CONTROL_CHANNEL_CAP` | `[runtime]` knobs |
+
+ENV is applied AFTER config-file load, so it takes priority over file
+values. Floors enforced via `effective_*()` accessors so a hostile or
+typoed ENV can't pin to pathological values.
 
 ## Inspecting
 

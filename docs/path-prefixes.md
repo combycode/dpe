@@ -31,6 +31,62 @@ Substitution is **anchored at the start** — `"prefix-$output"` does NOT substi
 
 Arrays and nested objects are recursed; only string values are inspected. Non-string values pass through unchanged.
 
+## User-supplied env variables: `${VAR}`
+
+Independent of path prefixes, the runner ALSO interpolates `${VAR}` in any string value of settings, reading from the process environment of `dpe run`. Strict braces — bare `$VAR` is **never** touched, which is what lets path prefixes (`$input`) and Mongo operators (`$set`) coexist with env interpolation.
+
+```yaml
+stages:
+  llm-fast:
+    tool: llm
+    settings:
+      provider: anthropic
+      model: ${MODEL_FAST}                         # required — error if unset
+      api_base: ${ANTHROPIC_BASE:-https://api.anthropic.com}
+  llm-deep:
+    tool: llm
+    settings:
+      provider: anthropic
+      model: ${MODEL_DEEP}
+      thinking_budget: ${THINKING_BUDGET:-2000}    # default if unset
+```
+
+```sh
+MODEL_FAST=claude-haiku-4-5 MODEL_DEEP=claude-opus-4-7 dpe run my:main
+```
+
+### Syntax
+
+| Form | Behavior |
+|---|---|
+| `${VAR}` | Substitute `VAR`'s value. **Hard error at compile** if `VAR` is unset. |
+| `${VAR:-default}` | Substitute `VAR` if set, else the literal `default` text. Empty default `${VAR:-}` allowed → empty string. |
+| `\${VAR}` | Literal `${VAR}` (escape — no substitution). |
+| `$VAR` (no braces) | Untouched. Reserved for path prefixes / Mongo operators. |
+
+`VAR` names accept `[A-Za-z0-9_]` only; other characters are a malformed-reference error.
+
+### When it runs
+
+Env interpolation is a **pre-pass before path-prefix substitution**, so combinations work naturally:
+
+```yaml
+cache_dir: "${DATA_ROOT}/$session/cache"
+# 1. ${DATA_ROOT}  → e.g. "/scratch/run42"  (env interp)
+# 2. $session/...  → ".../sessions/<id>_<variant>/cache"  (path resolver)
+# Final: "/scratch/run42/sessions/<id>_<variant>/cache"
+```
+
+### Failure mode
+
+A missing `${VAR}` (no default) fails the variant load with a clear message:
+
+```
+stage 'llm-fast': env var 'MODEL_FAST' is required but not set (in '${MODEL_FAST}')
+```
+
+Loud failure — never silently substitutes empty string. Add `:-default` if a fallback is acceptable.
+
 ## CLI flags that set the prefixes
 
 ```sh

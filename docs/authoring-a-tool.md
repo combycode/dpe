@@ -294,3 +294,76 @@ Windows PowerShell 5.1 reads `.ps1` files as Windows-1252 unless there's a UTF-8
 
 **`pwsh` command not found**
 Scripts target Windows PowerShell 5.1 (`powershell`). PowerShell 7 (`pwsh`) isn't assumed — scripts are written to work on both where possible, but the invocation commands in docs use `powershell`.
+
+---
+
+## Tools that don't use the framework runtime
+
+Most tools should use `combycode-dpe` (Rust) / `combycode-dpe`
+(Python) / `@combycode/dpe-framework-ts`. The framework handles argv
+parsing, stdin loop, all the stderr wire events, and graceful
+shutdown.
+
+A few tools need a bespoke main loop instead — typically because
+they're pass-throughs that don't transform `v` and want to skip the
+JSON parse + `ctx.output()` round-trip. Examples shipped in dpe-bundled:
+- `gate` — pass-through with side-effect (writes a state file)
+- `checkpoint` — buffers stdin to disk, releases on gate
+
+Plus pipeline-local examples like `slowmo`, `gen-numbers`,
+`gen-messages`. They write raw NDJSON to stdout and emit the same
+stderr wire events the framework would, by hand:
+
+```ts
+// Per stdin envelope: emit {"type":"input"} so rows_in ticks.
+process.stderr.write(JSON.stringify({type:"input", id, src}) + "\n");
+
+// After forwarding the envelope to stdout: emit a data-channel trace
+// so rows_out ticks.
+process.stdout.write(line + "\n");
+process.stderr.write(JSON.stringify({
+  type:"trace", id, src, labels:{}, channel:"data"
+}) + "\n");
+
+// On error: emit a {type:"error"} event. Runner injects t + sid before
+// persisting to <session>/logs/<stage>_errors.log.
+process.stderr.write(JSON.stringify({
+  type:"error", error:"...", input:v, id, src
+}) + "\n");
+
+// Free-form logs: same as ctx.log().
+process.stderr.write(JSON.stringify({
+  type:"log", level:"info", msg:"..."
+}) + "\n");
+```
+
+Wire shape MUST match `runner/schemas/stderr-events.schema.json`. The
+runner's stderr classifier silently treats unknown / malformed lines
+as `{type:"log", level:"info", msg:<raw>}` — easy to overlook a typo.
+
+If you find yourself writing a third bespoke tool, prefer the
+framework. The dpe-bundled bespoke ones predate the framework's
+maturity; new ones should only escape it for genuine perf reasons.
+
+---
+
+## Caching expensive operations
+
+Tools whose work is real money or real seconds (LLM calls, large
+parses, network round-trips) should cache results so re-runs of the
+same input skip the work.
+
+The framework ships `ctx.cached(namespace, key, produce)` for this.
+On-disk format is identical across SDKs:
+
+```
+$DPE_STORAGE/<namespace>/<hash-of-key>.json
+```
+
+Honors `DPE_CACHE_MODE` (use / refresh / bypass / off) — driven by
+`dpe run --cache <mode>`. Tool author picks the cache namespace +
+composes the key; framework handles read/write/mode logic.
+
+See [caching.md](caching.md) for the full convention, key derivation
+guidance, failure modes, and adoption checklist. Reference impls in
+the framework test suites under `frameworks/{ts,python,rust}/`.

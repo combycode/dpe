@@ -170,7 +170,55 @@ stages:
 
 `gate` passes everything through while writing `$session/gates/src-done.json` every N rows / ms. `checkpoint` buffers its input to disk, polls the gate files until all show `predicate_met: true`, then releases the spool downstream.
 
-### 8. Combining all of them
+#### 7a. Drain barrier (checkpoint without gates)
+
+If you only need "downstream runs after upstream finishes" and don't care about a gate-tracked predicate, omit `wait_for_gates` entirely:
+
+```yaml
+stages:
+  src:   { tool: X, input: $input }
+  drain:
+    tool: checkpoint
+    settings: { name: drain }   # no wait_for_gates → drain mode
+    input: src
+  downstream: { tool: Y, input: drain }
+```
+
+The checkpoint ingests every envelope to disk while `src` runs, then releases the entire spool to `downstream` as a single burst the moment `src` EOFs. Same barrier semantics as the gated version, no `gate` stage required.
+
+Use this for writes-before-read coordination (e.g., `spread` → write-sink AND drain-checkpoint → reader; reader starts only after writes flushed) or when downstream needs the full stream before emitting (sort-before-emit). See [tools/checkpoint.md](tools/checkpoint.md#drain-barrier-no-gates) for more.
+
+### 8. Toggle (conditional branch per run)
+
+```yaml
+stages:
+  src:   { tool: X, input: $input }
+  contracts-gate:
+    tool: toggle
+    input: src
+    settings:
+      env: SKIP_CONTRACTS           # env var to check
+      value: "1"                    # OR values: ["1","yes","true"]
+      mode: off                     # default "on"
+  contracts-pipeline:
+    tool: contract-doc-converter
+    input: contracts-gate
+```
+
+Run `SKIP_CONTRACTS=1 dpe run :main ...` → the gate's resolved action is `drop`, downstream of `contracts-gate` sees zero envelopes. Without the env var, action is `pass` and the branch runs normally.
+
+Decision is taken once at plan-compile time, so per-envelope cost is byte-copy or constant-time skip. `dpe check --plan` shows the resolved action in the plan JSON. Use this to turn whole branches on/off per run instead of copying the variant.
+
+Truth table:
+
+| `mode` | env matches | env doesn't match |
+|---|---|---|
+| `on` (default) | pass | drop |
+| `off` | drop | pass |
+
+`value` and `values` are mutually exclusive (one-of match); `env` alone (no `value`/`values`) → matches when env is set to any non-empty value; no `env` → always pass-through (transparent — useful as a placeholder while wiring).
+
+### 9. Combining all of them
 
 Variant `15-heavy-pipeline.yaml` (in `test-pipeline/`) combines scan + dual-source + fan-in + replicas + filter + route + per-channel transforms + fan-in rejoin in 17 stages. See [examples](examples/README.md#tier-4-full-etl).
 
@@ -215,6 +263,34 @@ stages:
 ```
 
 The tool receives the file's contents on argv[1] (same as inline `settings`). Validation checks existence + parseability at `check` time.
+
+## Environment variables in settings: `${VAR}`
+
+Any string value in `settings` can interpolate process-env vars using
+`${VAR}` or `${VAR:-default}` syntax. The runner does this before
+spawning the tool, so the same variant can drive different
+configurations from the shell:
+
+```yaml
+stages:
+  llm:
+    tool: llm
+    settings:
+      provider: anthropic
+      model: ${MODEL:-claude-haiku-4-5}     # default when MODEL unset
+      thinking_budget: ${THINK:-2000}
+      api_base: ${ANTHROPIC_BASE:-https://api.anthropic.com}
+```
+
+```sh
+MODEL=claude-opus-4-7 THINK=8000 dpe run my:main
+```
+
+Strict braces only — `$VAR` (no braces) is left untouched, reserved for
+path prefixes (`$input`, `$session`, ...) and Mongo operators (`$set`).
+Missing `${VAR}` without a default fails the variant load loudly.
+See [Path prefixes](path-prefixes.md#user-supplied-env-variables-var)
+for the full syntax + interaction with path prefixes.
 
 ## YAML scalar conventions (strict mode)
 

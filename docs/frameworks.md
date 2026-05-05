@@ -40,18 +40,38 @@ my-tool/
 
 | Method | Purpose |
 |---|---|
-| `ctx.output(v, {id?, src?})` | emit data envelope; framework writes `{t:"d", id, src, v}` to stdout and flushes a trace event first |
-| `ctx.meta(v)` | emit meta envelope `{t:"m", v}` |
+| `ctx.output(v, {id?, src?})` | emit data envelope; framework writes `{t:"d", id, src, v}` to stdout, preceded by a `{type:"trace", channel:"data"}` event on stderr (drives `rows_out`) |
+| `ctx.meta(v)` | emit meta envelope `{t:"m", v}` to stdout, preceded by a `{type:"trace", channel:"meta"}` event on stderr (drives the per-stage `meta` counter) |
 | `ctx.emit(queue, v, {id?, src?})` | queue a follow-up item handled by `process_<queue>` |
 | `ctx.drain()` | synchronously drain the queue before continuing |
 | `ctx.log(msg, level=info, ...extra)` | write a `{type:"log"}` event to stderr |
-| `ctx.error(v, err)` | write a `{type:"error",error,input,id,src}` event to stderr |
-| `ctx.trace(key, value)` | accumulate a label; flushed once as part of the next `ctx.output()` |
-| `ctx.stats(data)` | write a `{type:"stats", ...data}` event to stderr |
+| `ctx.error(v, err)` | write a `{type:"error",error,input,id,src}` event to stderr; runner persists with `t` and `sid` injected, drives `errors` counter |
+| `ctx.trace(key, value)` | accumulate a label; flushed once as part of the next `ctx.output()`'s trace event |
+| `ctx.stats(data)` | write a `{type:"stats", ...data}` event to stderr (custom counters, not yet routed by runner — TODO) |
 | `ctx.hash(str)` | deterministic 16-hex blake2b of a string |
 | `ctx.hash_file(path)` | streaming hash of a file, returns hex |
+| `ctx.cached(ns, key, produce)` | cache the result of `produce()` under `$storage/<ns>/<hash>.json`, honoring `DPE_CACHE_MODE`. See [caching.md](caching.md). |
 
-The framework emits a **merged** trace event per `ctx.output()` — one row in `$session/trace/trace.N.ndjson` per envelope produced. Call `ctx.trace("key", value)` any number of times between outputs; they all land in the same trace event, then clear.
+### Wire events emitted by the framework runtime (NOT user code)
+
+The framework's main loop also emits one event the user doesn't call:
+
+| Event | When | Wire format | Drives |
+|---|---|---|---|
+| `input` | After `parse_envelope()` succeeds, BEFORE `process_input` runs | `{"type":"input","id":<env.id>,"src":<env.src>}` | `rows_in` per stage. Lights up for terminal sinks (no `ctx.output()`) and pass-through tools — without it, those stages would be invisible to per-stage stats. |
+
+### Trace event semantics
+
+Per `ctx.output()`: ONE merged trace event with `channel:"data"`,
+optional accumulated labels from prior `ctx.trace(k, v)` calls. Labels
+clear on each output.
+
+Per `ctx.meta()`: ONE trace event with `channel:"meta"`, empty labels.
+Inherits the current invocation's id/src.
+
+Pre-v2.0.2 tools that emit traces without a `channel` field are
+treated as `channel:"data"` for backward compat — same counter wiring
+as new code. No code changes required to upgrade.
 
 ## Rust
 
@@ -179,6 +199,64 @@ run({
 ```
 
 Async processors are supported out of the box — useful for network calls.
+
+## Receiving meta envelopes (`accept_meta: true`)
+
+By default the framework's read loop dispatches ONLY data envelopes
+(`t:"d"`) to your processor. Meta envelopes (`t:"m"`) are silently
+skipped — most tools transform data and have no use for meta.
+
+Tools that should receive meta envelopes (typically sinks like
+`write-file-stream` when used as a meta-output target) opt in via a
+**per-stage settings flag**:
+
+```yaml
+sink-meta:
+  tool: write-file-stream
+  settings:
+    default_file: "$output/per-file_summary.ndjson"
+    format: ndjson
+    accept_meta: true                # ← lets meta envelopes reach process_input
+  input: upstream-route.meta
+```
+
+When `accept_meta: true` is set in `settings`, the framework dispatches
+both `t:"d"` AND `t:"m"` envelopes to your processor. Meta envelopes
+typically have no `id` / `src` fields — `ctx.id` and `ctx.src` will be
+empty strings during those calls. The `v` payload is normal.
+
+Default is `false` — strictly opt-in, fully backward compatible.
+
+Identical setting name and semantics across all three SDKs.
+
+## Per-stage cache override (`cache:` field)
+
+Each `Stage` accepts an optional top-level `cache:` field that
+overrides the session-level cache mode (`--cache`) for that stage's
+spawn. Useful when iterating on one stage's prompt / parser while
+keeping the rest of the pipeline cached:
+
+```yaml
+stages:
+  classify:                          # uses session cache (default `use`)
+    tool: classify
+    settings: { ... }
+    input: $input
+
+  doc-converter:
+    tool: doc-converter
+    cache: "off"                     # ← skip cache for this stage only
+    settings: { ... }
+    input: classify
+```
+
+Values: `use` (default — read+write), `refresh` (always produce, overwrite),
+`bypass` (skip read+write but no harm to existing entries),
+`off` (same as `bypass`). Wired into `DPE_CACHE_MODE` per-spawn.
+
+The runner's path-prefix substitution applies to `settings:` only, so
+this stage-level field passes the literal mode string to the env
+var; tools using `ctx.cached(...)` see it as a normal cache mode.
 
 ## Framework tests + contracts
 
