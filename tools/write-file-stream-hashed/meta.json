@@ -6,5 +6,7 @@
   "entry": "target/release/write-file-stream-hashed",
   "run": "cargo run --release --",
   "build": "cargo build --release",
-  "test": "cargo test"
+  "test": "cargo test",
+  "test_skipped": true,
+  "test_skipped_reason": "Pure hash-dedup row-append; sidecar lifecycle covered by tests/. Stage-level harness adds no coverage beyond cargo tests."
 }
