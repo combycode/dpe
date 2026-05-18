@@ -29,6 +29,23 @@ settings:
       type: string
       default: ","
       description: "csv only — single-byte delimiter"
+    passthrough_input:
+      type: boolean
+      default: false
+      description: |
+        When true, every field on the input envelope's `v` is copied
+        onto every emitted row envelope at the top level. Reserved
+        tool fields (`file`, `row_idx`, `row`) ALWAYS win on key
+        collision — they describe the current row, not the input.
+        Anything else (including `path`) passes through.
+
+        Use this to carry classification / metadata from an upstream
+        stage (e.g. `label`, `stream_id`, `category` attached by
+        `read-tables` or `classify`) down to every row of the file
+        without a separate `normalize` merge step. Caller's values at
+        the top level of the row envelope's v take precedence over
+        same-named fields stored INSIDE the file row (which remain
+        nested in `v.row`).
 
 input:
   description: "One envelope per file to read."

@@ -197,3 +197,119 @@ fn meta_emitted_per_file() {
     assert_eq!(metas[0]["v"]["rows"], 2);
     assert_eq!(metas[0]["v"]["format"], "ndjson");
 }
+
+// ─── passthrough_input ──────────────────────────────────────────────
+
+fn envelope_for_with(path: &str, extra: serde_json::Map<String, Value>) -> Value {
+    let mut v = serde_json::Map::new();
+    v.insert("path".into(), Value::String(path.to_string()));
+    for (k, val) in extra { v.insert(k, val); }
+    json!({"t":"d","id":"t","src":"t","v": Value::Object(v)})
+}
+
+#[test]
+fn passthrough_off_default_emits_only_reserved_fields() {
+    let path = write_fixture("pt-off.ndjson", "{\"a\":1}\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("label".into(), json!("ALPHA"));
+    let (stdout, _) = run_tool(json!({"format":"ndjson"}),
+        &[envelope_for_with(&path, extra)]);
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 1);
+    let v = &data[0]["v"];
+    // Reserved fields present.
+    assert!(v.get("file").is_some());
+    assert!(v.get("row_idx").is_some());
+    assert!(v.get("row").is_some());
+    // Passthrough OFF → input's label must NOT leak through.
+    assert!(v.get("label").is_none(), "got: {v}");
+}
+
+#[test]
+fn passthrough_on_carries_input_fields_when_no_conflict() {
+    let path = write_fixture("pt-on.ndjson", "{\"a\":1}\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("label".into(), json!("ALPHA"));
+    extra.insert("stream_id".into(), json!("alpha_x"));
+    let (stdout, _) = run_tool(json!({"format":"ndjson","passthrough_input":true}),
+        &[envelope_for_with(&path, extra)]);
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 1);
+    let v = &data[0]["v"];
+    assert_eq!(v["label"], "ALPHA");
+    assert_eq!(v["stream_id"], "alpha_x");
+    // Path also passes through (the agent's spec example shows it).
+    assert_eq!(v["path"], path);
+    // Reserved fields still present + correct.
+    assert_eq!(v["row_idx"], 0);
+    assert_eq!(v["row"]["a"], 1);
+}
+
+#[test]
+fn passthrough_on_does_not_override_reserved_fields() {
+    // Input declares row_idx: 99 — the tool's 0-based emission index
+    // MUST still win since it describes the current row, not the input.
+    let path = write_fixture("pt-reserved.ndjson", "{\"a\":1}\n{\"a\":2}\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("row_idx".into(), json!(99));
+    extra.insert("file".into(), json!("/hijacked"));
+    extra.insert("row".into(), json!("hijacked row"));
+    let (stdout, _) = run_tool(json!({"format":"ndjson","passthrough_input":true}),
+        &[envelope_for_with(&path, extra)]);
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["v"]["row_idx"], 0);
+    assert_eq!(data[1]["v"]["row_idx"], 1);
+    assert_eq!(data[0]["v"]["file"], path);   // not "/hijacked"
+    assert_eq!(data[0]["v"]["row"]["a"], 1);  // not "hijacked row"
+}
+
+#[test]
+fn passthrough_on_top_level_field_beats_same_name_inside_row() {
+    // File row CONTENT happens to have a `label` field — that stays
+    // nested inside v.row. The TOP-LEVEL v.label comes from the
+    // input envelope, so downstream sees the caller's reclassified
+    // value rather than the stale file value. Matches the agent's
+    // example: input `label: ALPHA` vs file `label: OLD_ALPHA`.
+    let path = write_fixture("pt-input-wins.ndjson",
+        "{\"label\":\"OLD_ALPHA\",\"date\":\"2025-01-15\"}\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("label".into(), json!("ALPHA"));
+    let (stdout, _) = run_tool(json!({"format":"ndjson","passthrough_input":true}),
+        &[envelope_for_with(&path, extra)]);
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 1);
+    let v = &data[0]["v"];
+    assert_eq!(v["label"], "ALPHA");                  // top-level: input value
+    assert_eq!(v["row"]["label"], "OLD_ALPHA");      // nested: untouched file value
+}
+
+#[test]
+fn passthrough_on_works_for_lines_format() {
+    let path = write_fixture("pt-lines.txt", "alpha\nbeta\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("source_id".into(), json!("doc-1"));
+    let (stdout, _) = run_tool(json!({"format":"lines","passthrough_input":true}),
+        &[envelope_for_with(&path, extra)]);
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 2);
+    for d in &data {
+        assert_eq!(d["v"]["source_id"], "doc-1");
+    }
+}
+
+#[test]
+fn passthrough_on_works_for_csv_format() {
+    let path = write_fixture("pt-csv.csv", "a,b\n1,2\n3,4\n");
+    let mut extra = serde_json::Map::new();
+    extra.insert("tag".into(), json!("alpha"));
+    let (stdout, _) = run_tool(
+        json!({"format":"csv","csv_header":true,"passthrough_input":true}),
+        &[envelope_for_with(&path, extra)],
+    );
+    let data: Vec<_> = stdout.iter().filter(|e| e.get("t") == Some(&json!("d"))).collect();
+    assert_eq!(data.len(), 2);
+    for d in &data {
+        assert_eq!(d["v"]["tag"], "alpha");
+    }
+}
