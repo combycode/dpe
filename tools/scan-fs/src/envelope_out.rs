@@ -50,6 +50,10 @@ fn relative_directory(root: &Path, entry: &Path, kind: EntryKind) -> String {
 
 /// Build the `v` payload object.
 /// `hash_value` is the precomputed hex digest (or None for dirs / hash=none).
+/// `passthrough` is a list of (key, value) pairs from the input envelope's
+/// `v` to inject as extra fields. Inserted FIRST so scan-fs's canonical
+/// fields (`kind`/`root`/`directory`/...) override on key collision.
+/// Empty slice = no passthrough (the legacy behaviour).
 pub fn build_v(
     root: &Path,
     entry: &Path,
@@ -57,6 +61,7 @@ pub fn build_v(
     kind: EntryKind,
     hash_algo: HashAlgo,
     hash_value: Option<String>,
+    passthrough: &[(String, Value)],
 ) -> Value {
     let root_str = dir_str(&root.to_string_lossy());
     let directory = relative_directory(root, entry, kind);
@@ -91,17 +96,20 @@ pub fn build_v(
         _                              => Value::Null,
     };
 
-    json!({
-        "kind":      kind.as_str(),
-        "root":      root_str,
-        "directory": directory,
-        "filename":  filename,
-        "ext":       ext,
-        "size":      size,
-        "created":   created,
-        "changed":   changed,
-        "hash":      hash,
-    })
+    let mut out = serde_json::Map::new();
+    for (k, val) in passthrough {
+        out.insert(k.clone(), val.clone());
+    }
+    out.insert("kind".into(),      json!(kind.as_str()));
+    out.insert("root".into(),      json!(root_str));
+    out.insert("directory".into(), json!(directory));
+    out.insert("filename".into(),  json!(filename));
+    out.insert("ext".into(),       json!(ext));
+    out.insert("size".into(),      json!(size));
+    out.insert("created".into(),   json!(created));
+    out.insert("changed".into(),   json!(changed));
+    out.insert("hash".into(),      hash);
+    Value::Object(out)
 }
 
 /// Reconstruct the absolute filesystem path from a v-shaped record.
@@ -162,7 +170,7 @@ mod tests {
         let mut f = File::create(&entry).unwrap();
         f.write_all(b"hello").unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
-        let v = build_v(root, &entry, &meta, EntryKind::File, HashAlgo::None, None);
+        let v = build_v(root, &entry, &meta, EntryKind::File, HashAlgo::None, None, &[]);
         assert_eq!(v["kind"], "file");
         assert_eq!(v["filename"], "report");
         assert_eq!(v["ext"], "pdf");
@@ -180,7 +188,7 @@ mod tests {
         let entry = tmp.path().join("README");
         File::create(&entry).unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
-        let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::None, None);
+        let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::None, None, &[]);
         assert_eq!(v["filename"], "README");
         assert_eq!(v["ext"], "");
     }
@@ -192,7 +200,7 @@ mod tests {
         create_dir_all(&entry).unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
         let v = build_v(tmp.path(), &entry, &meta, EntryKind::Dir, HashAlgo::Xxhash,
-                        Some("ignored".into()));
+                        Some("ignored".into()), &[]);
         assert_eq!(v["kind"], "dir");
         assert_eq!(v["filename"], "subdir");
         assert_eq!(v["ext"], "");
@@ -208,8 +216,29 @@ mod tests {
         File::create(&entry).unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
         let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::Xxhash,
-                        Some("deadbeefcafebabe".into()));
+                        Some("deadbeefcafebabe".into()), &[]);
         assert_eq!(v["hash"], "deadbeefcafebabe");
+    }
+
+    #[test]
+    fn passthrough_inserted_before_canonical_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = tmp.path().join("a.txt");
+        File::create(&entry).unwrap();
+        let meta = std::fs::metadata(&entry).unwrap();
+        let pt = vec![
+            ("category".to_string(), serde_json::json!("items")),
+            // Collision: passthrough's `filename` MUST be overridden by
+            // scan-fs's own `filename` key.
+            ("filename".to_string(), serde_json::json!("hijacked")),
+        ];
+        let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::None, None, &pt);
+        assert_eq!(v["category"], "items");
+        assert_eq!(v["filename"], "a");          // scan-fs wins
+        // Passthrough key appears in the object (insertion order: pt
+        // first, then canonical fields).
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys[0], "category");
     }
 
     #[test]
@@ -219,7 +248,7 @@ mod tests {
         std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
         File::create(&entry).unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
-        let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::None, None);
+        let v = build_v(tmp.path(), &entry, &meta, EntryKind::File, HashAlgo::None, None, &[]);
         let reconstructed = reconstruct_path(&v).unwrap();
         // String comparison via canonical / forward slashes
         let want = entry.to_string_lossy().replace('\\', "/");
@@ -233,7 +262,7 @@ mod tests {
         let entry = tmp.path().join("subdir");
         std::fs::create_dir_all(&entry).unwrap();
         let meta = std::fs::metadata(&entry).unwrap();
-        let v = build_v(tmp.path(), &entry, &meta, EntryKind::Dir, HashAlgo::None, None);
+        let v = build_v(tmp.path(), &entry, &meta, EntryKind::Dir, HashAlgo::None, None, &[]);
         let reconstructed = reconstruct_path(&v).unwrap();
         let want = entry.to_string_lossy().replace('\\', "/");
         let got  = reconstructed.to_string_lossy().replace('\\', "/");

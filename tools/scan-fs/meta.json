@@ -4,5 +4,7 @@
   "description": "Filesystem scanner — full + diff modes, files/dirs/both, glob include/exclude, optional content hash.",
   "runtime": "rust",
   "entry": "target/release/scan-fs",
-  "run": "cargo run --release --"
+  "run": "cargo run --release --",
+  "test_skipped": true,
+  "test_skipped_reason": "Pure filesystem-walk semantics; full coverage in tests/. Stage-level harness duplicates cargo tests without adding value."
 }

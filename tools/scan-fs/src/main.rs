@@ -39,7 +39,20 @@ fn handle_full(v: Value, settings: &Settings, ctx: &mut Context<'_>) {
         Some(p) => PathBuf::from(p),
         None    => { ctx.error(&v, "missing v.path"); return; }
     };
-    let result = scan_root(&path, settings, |ev| match ev {
+    // In full mode, only `v.path` is a consumed input. Everything else
+    // on the input envelope flows through to every emitted entry when
+    // passthrough_input is on.
+    let passthrough: Vec<(String, Value)> = if settings.passthrough_input {
+        v.as_object()
+            .map(|m| m.iter()
+                .filter(|(k, _)| k.as_str() != "path")
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let result = scan_root(&path, settings, &passthrough, |ev| match ev {
         ScanEvent::Entry(out_v)            => ctx.output(out_v, None, None),
         ScanEvent::Error { path, error }   => {
             ctx.error(&serde_json::json!({"path": path.to_string_lossy()}), &error);

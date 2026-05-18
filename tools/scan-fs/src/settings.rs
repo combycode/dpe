@@ -42,6 +42,16 @@ pub struct Settings {
     /// Max file size in bytes.
     #[serde(default)]
     pub max_size: Option<u64>,
+
+    /// When true, every field on the input envelope's `v` (except keys
+    /// scan-fs consumes itself: `path` in full mode; the canonical
+    /// scan record fields `kind`/`root`/`directory`/`filename`/`ext`/
+    /// `size`/`created`/`changed`/`hash` in diff mode) is copied onto
+    /// every emitted envelope. Use this to attach upstream tags
+    /// (e.g. `category`, `batch_tag`) without a downstream `normalize`
+    /// step. scan-fs's own fields take precedence on key collision.
+    #[serde(default)]
+    pub passthrough_input: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]

@@ -21,9 +21,13 @@ pub enum ScanEvent {
 /// Walk `root` honoring `settings`, calling `emit` per event.
 /// Stops on infrastructure errors (e.g. invalid pattern); per-entry errors
 /// are routed via `ScanEvent::Error`.
+///
+/// `passthrough` is forwarded to every emitted entry's `v` (see
+/// `envelope_out::build_v`). Pass an empty slice to disable.
 pub fn scan_root<F>(
     root: &Path,
     settings: &Settings,
+    passthrough: &[(String, serde_json::Value)],
     mut emit: F,
 ) -> Result<(), ScanError>
 where F: FnMut(ScanEvent),
@@ -33,16 +37,11 @@ where F: FnMut(ScanEvent),
     }
     let matcher = Matcher::new(&settings.include.0, &settings.exclude.0)
         .map_err(ScanError::Pattern)?;
-    let mut walker = WalkDir::new(root)
-        .follow_links(settings.follow_symlinks)
-        .into_iter();
-
+    let mut wd = WalkDir::new(root).follow_links(settings.follow_symlinks);
     if let Some(d) = settings.depth {
-        walker = WalkDir::new(root)
-            .max_depth(d)
-            .follow_links(settings.follow_symlinks)
-            .into_iter();
+        wd = wd.max_depth(d);
     }
+    let walker = wd.into_iter();
 
     for entry in walker {
         let entry = match entry {
@@ -117,7 +116,7 @@ where F: FnMut(ScanEvent),
             None
         };
 
-        let v = build_v(root, abs, &meta, kind, settings.hash, hash);
+        let v = build_v(root, abs, &meta, kind, settings.hash, hash, passthrough);
         emit(ScanEvent::Entry(v));
     }
     Ok(())
@@ -160,9 +159,17 @@ mod tests {
     }
 
     fn collect(root: &Path, s: &Settings) -> (Vec<serde_json::Value>, Vec<String>) {
+        collect_with_passthrough(root, s, &[])
+    }
+
+    fn collect_with_passthrough(
+        root: &Path,
+        s: &Settings,
+        passthrough: &[(String, serde_json::Value)],
+    ) -> (Vec<serde_json::Value>, Vec<String>) {
         let mut entries = Vec::new();
         let mut errs    = Vec::new();
-        scan_root(root, s, |ev| match ev {
+        scan_root(root, s, passthrough, |ev| match ev {
             ScanEvent::Entry(v)            => entries.push(v),
             ScanEvent::Error { error, .. } => errs.push(error),
         }).unwrap();
@@ -338,8 +345,44 @@ mod tests {
         let p = tmp.path().join("file.txt");
         File::create(&p).unwrap();
         let s = s_default();
-        let result = scan_root(&p, &s, |_| {});
+        let result = scan_root(&p, &s, &[], |_| {});
         assert!(matches!(result, Err(ScanError::NotADir(_))));
+    }
+
+    #[test]
+    fn passthrough_fields_appear_on_every_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("a.txt"), b"a");
+        write(&tmp.path().join("sub/b.txt"), b"b");
+        let pt = vec![
+            ("category".into(), serde_json::json!("items")),
+            ("batch_tag".into(), serde_json::json!("b19")),
+        ];
+        let (entries, _) = collect_with_passthrough(tmp.path(), &s_default(), &pt);
+        assert_eq!(entries.len(), 2);
+        for v in &entries {
+            assert_eq!(v["category"], "items");
+            assert_eq!(v["batch_tag"], "b19");
+            // canonical scan-fs fields still present
+            assert_eq!(v["kind"], "file");
+            assert!(v["filename"].is_string());
+        }
+    }
+
+    #[test]
+    fn passthrough_does_not_override_canonical_fields() {
+        // User puts `kind: "uploaded"` on the input envelope; scan-fs's
+        // own `kind` MUST win on the emitted v.
+        let tmp = tempfile::tempdir().unwrap();
+        write(&tmp.path().join("a.txt"), b"a");
+        let pt = vec![
+            ("kind".into(),     serde_json::json!("uploaded")),
+            ("filename".into(), serde_json::json!("hijacked")),
+        ];
+        let (entries, _) = collect_with_passthrough(tmp.path(), &s_default(), &pt);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["kind"], "file");
+        assert_eq!(entries[0]["filename"], "a");
     }
 
     #[test]

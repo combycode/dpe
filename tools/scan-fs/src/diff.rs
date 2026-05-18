@@ -16,6 +16,25 @@ use crate::envelope_out::{build_v, reconstruct_path, EntryKind};
 use crate::hash_file::hash_file;
 use crate::settings::{HashAlgo, Settings};
 
+/// Canonical scan-fs `v` keys. Diff mode treats these as "consumed inputs"
+/// (we reconstruct the file path from them and rebuild the output `v`
+/// from disk state). Anything else on the input envelope is user
+/// passthrough — preserved on the emitted Modified envelope when
+/// `settings.passthrough_input` is true.
+const DIFF_RESERVED_KEYS: &[&str] = &[
+    "kind", "root", "directory", "filename", "ext",
+    "size", "created", "changed", "hash",
+];
+
+fn diff_passthrough(prev_v: &Value) -> Vec<(String, Value)> {
+    prev_v.as_object()
+        .map(|m| m.iter()
+            .filter(|(k, _)| !DIFF_RESERVED_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect())
+        .unwrap_or_default()
+}
+
 #[derive(Debug)]
 pub enum DiffOutcome {
     /// File still present and unchanged.
@@ -65,8 +84,13 @@ pub fn diff_one(prev_v: &Value, settings: &Settings) -> DiffOutcome {
     let root = prev_v.get("root").and_then(|r| r.as_str()).unwrap_or("");
     let root_path = strip_trailing_slash_to_path(root);
 
+    let passthrough = if settings.passthrough_input {
+        diff_passthrough(prev_v)
+    } else {
+        Vec::new()
+    };
     let mut v = build_v(&root_path, &path, &meta, EntryKind::File,
-                        settings.hash, new_hash);
+                        settings.hash, new_hash, &passthrough);
     if let Value::Object(m) = &mut v {
         m.insert("action".into(), Value::String("modified".into()));
     }
@@ -204,6 +228,50 @@ mod tests {
         match diff_one(&prev, &settings(HashAlgo::None)) {
             DiffOutcome::BadInput(_) => (),
             other => panic!("expected BadInput, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn modified_carries_passthrough_when_enabled() {
+        // User added `category` + `batch_tag` upstream — they should
+        // travel onto the Modified envelope when passthrough_input=true.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("a.txt");
+        write_file(&p, b"hello");
+        let mut prev = prev_for(tmp.path(), "a.txt", Some("0000000000000000"), 5, 0.0);
+        prev.as_object_mut().unwrap().insert(
+            "category".into(), serde_json::json!("items"));
+        prev.as_object_mut().unwrap().insert(
+            "batch_tag".into(), serde_json::json!("b19"));
+        let mut s = settings(HashAlgo::Xxhash);
+        s.passthrough_input = true;
+        match diff_one(&prev, &s) {
+            DiffOutcome::Modified(v) => {
+                assert_eq!(v["action"], "modified");
+                assert_eq!(v["category"], "items");
+                assert_eq!(v["batch_tag"], "b19");
+                // canonical scan-fs fields still present
+                assert_eq!(v["kind"], "file");
+            }
+            other => panic!("expected Modified, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn modified_drops_passthrough_when_disabled() {
+        // passthrough_input=false (default) → user fields stripped.
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("a.txt");
+        write_file(&p, b"hello");
+        let mut prev = prev_for(tmp.path(), "a.txt", Some("0000000000000000"), 5, 0.0);
+        prev.as_object_mut().unwrap().insert(
+            "category".into(), serde_json::json!("items"));
+        match diff_one(&prev, &settings(HashAlgo::Xxhash)) {
+            DiffOutcome::Modified(v) => {
+                assert!(v.get("category").is_none(),
+                    "expected category to be stripped; got {v:?}");
+            }
+            other => panic!("expected Modified, got {:?}", other),
         }
     }
 }
