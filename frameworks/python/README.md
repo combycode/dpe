@@ -91,8 +91,10 @@ dpe-dev scaffold --name my-tool --runtime python --out ./my-tool --description "
 cd my-tool
 dpe-dev build .   # creates .venv, installs the tool with [dev] extras
 dpe-dev test  .   # pytest inside the venv
-dpe-dev verify .  # spawn the tool's main.py, feed input.ndjson, diff stdout vs expected.ndjson
 ```
+
+End-to-end stage testing happens via `dpe test <pipeline>:<stage>` once the
+tool is wired into a pipeline — see `docs/testing.md`.
 
 ## Optional speed-up
 

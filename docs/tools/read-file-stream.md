@@ -21,7 +21,40 @@ read:
     limit:      null       # null = all; else stop after N rows per file
     csv_header: true       # csv only — row 0 as field names → rows become objects
     csv_delim:  ","        # csv only — single-byte delimiter
+    passthrough_input: false  # carry input v fields onto every emitted row
   input: <upstream-providing-paths>
+```
+
+### `passthrough_input`
+
+When `true`, every field on the input envelope's `v` is copied onto every emitted row envelope's v at the top level. Reserved tool fields (`file`, `row_idx`, `row`) ALWAYS take precedence — they describe the current row, not the input.
+
+| Conflict shape | Winner |
+|---|---|
+| Input v has `label: "ALPHA"`; file row content (parsed into `v.row`) has `label: "OLD_ALPHA"` | Top-level `v.label: "ALPHA"` (from input). File's value stays nested at `v.row.label`. |
+| Input v has `row_idx: 99` | Tool's 0-based `row_idx` wins. Input's `row_idx` is dropped. |
+| Input v has `file: "/hijacked"` | Tool's resolved file path wins. |
+| Input v has `category: "items"` (no collision) | Carried through verbatim. |
+| Input v has `path: "/tmp/x.ndjson"` (input only) | Carried through to the emitted v (in addition to `file`). |
+
+Use this to carry classification / metadata from upstream (e.g. `label`, `stream_id`, `category` attached by `read-tables` or `classify`) onto every row without a downstream `normalize` merge step.
+
+```yaml
+# Recon row expansion: feed table envelopes through read-file-stream
+# so each row in the saved NDJSON inherits the table's reclassified
+# label / stream_id at the top level.
+recon-set-row-path:
+  tool: normalize
+  settings:
+    rules: [{ op: rename, map: { target: path } }]
+  input: reclassify-recon-tables
+
+recon-read-rows:
+  tool: read-file-stream
+  settings:
+    format: ndjson
+    passthrough_input: true
+  input: recon-set-row-path
 ```
 
 ## Output

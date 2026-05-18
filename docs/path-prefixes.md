@@ -31,6 +31,70 @@ Substitution is **anchored at the start** — `"prefix-$output"` does NOT substi
 
 Arrays and nested objects are recursed; only string values are inspected. Non-string values pass through unchanged.
 
+## Token form in envelope data (`v`)
+
+Settings substitution is a **startup-time** operation that happens once, before a tool processes any envelopes. The `$prefix` tokens in **envelope payloads** (`v` fields) are a separate, runtime concern and follow a different rule.
+
+### The round-trip contract
+
+Tools built with a DPE framework SDK (Rust / Python / TypeScript) observe this convention:
+
+1. **Resolve on input.** Before `process_input` (or equivalent) receives the envelope, the framework resolves any `$prefix/...` string inside `v` to its absolute path. The processor function always sees plain absolute paths.
+
+2. **Tokenize on output.** When `ctx.output(v)` emits a result, the framework re-tokenizes absolute paths back into `$prefix/...` form. The envelope that travels to the next stage contains tokens, not absolute paths.
+
+Because all stages share the same DPE_* env vars (set by the same `SessionContext`), resolve and tokenize are exact inverses — a token that enters stage A exits as the same token, despite the intermediate absolute-path representation inside the processor.
+
+```
+stage A (framework tool)
+  stdin:  {"v": {"path": "$input/data.csv"}}  <-- tokenized: from upstream
+  inside processor: path == "/abs/input/data.csv"   <-- resolved
+  stdout: {"v": {"path": "$input/data.csv"}}  <-- tokenized: emitted by ctx.output()
+
+stage B (framework tool)
+  stdin:  {"v": {"path": "$input/data.csv"}}  <-- same tokenized form
+  inside processor: path == "/abs/input/data.csv"   <-- resolved again
+```
+
+### Built-in expressions see tokenized form
+
+Built-in stages (`filter`, `route`, `dedup`, `group-by`, `spread`) run in-process inside the runner. They are **byte-level pass-throughs**: the raw JSON bytes of every envelope travel unchanged through the builtin and arrive at the downstream stage in their original token form. No resolution or tokenization occurs.
+
+The expression engine inside `filter` and `route` evaluates `v` as-is from the JSON. It does **not** resolve `$prefix` tokens. A path field arriving as `"$input/data.csv"` is seen by expressions as the string `"$input/data.csv"`, not as the absolute path it would resolve to.
+
+**Consequence for pipeline authors:** when writing a builtin expression that compares a path field, use the token form:
+
+```yaml
+# Correct -- expression matches the tokenized value in transit:
+filter-input-only:
+  tool: filter
+  expression: 'v.path == "$input/data.csv"'
+  input: upstream
+
+# Incorrect -- absolute path never matches a tokenized value in transit:
+filter-input-only:
+  tool: filter
+  expression: 'v.path == "/some/absolute/input/data.csv"'  # NEVER matches
+  input: upstream
+```
+
+This is symmetric between `filter` and `route`:
+
+```yaml
+route-by-dest:
+  tool: route
+  routes:
+    from-input:  'v.path == "$input/data.csv"'     # correct: token form
+    from-output: 'v.path == "$output/result.json"' # correct: token form
+  input: upstream
+```
+
+The same rule applies to `dedup` key paths and `group-by` key paths, since those also read raw field values from the envelope.
+
+### Tools that do not use the SDK
+
+A tool that manipulates envelopes directly (e.g. a script without a DPE framework SDK) is responsible for respecting the token convention: read `$prefix` tokens from `v`, resolve via `DPE_*` env vars, and re-tokenize before emitting. Omitting re-tokenization means downstream builtins will not be able to match path expressions.
+
 ## User-supplied env variables: `${VAR}`
 
 Independent of path prefixes, the runner ALSO interpolates `${VAR}` in any string value of settings, reading from the process environment of `dpe run`. Strict braces — bare `$VAR` is **never** touched, which is what lets path prefixes (`$input`) and Mongo operators (`$set`) coexist with env interpolation.

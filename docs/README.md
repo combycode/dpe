@@ -59,7 +59,8 @@ That's it. Each stage is a separate OS process; the runner wires stdout→stdin 
 | [Writing pipelines](writing-pipelines.md) | author YAML variants: linear, fan-in, route, filter, replicas, dedup |
 | [Expressions](expressions.md) | route / filter / condition expressions in the DSL |
 | [Path prefixes](path-prefixes.md) | `$input` / `$output` / `$configs` / `$storage` / `$temp` / `$session` |
-| [CLI reference](cli.md) | `dpe init / run / check / tools / install / config / log / logs / monitor` — full flag reference + run --json --stats wire format |
+| [CLI reference](cli.md) | `dpe init / run / check / test / coverage / tools / install / config / log / logs / monitor` — full flag reference + run --json --stats wire format |
+| [Testing](testing.md) | `dpe test` — per-stage snapshot tests with `expected/data.ndjson` diff; `dpe coverage` — per-variant matrix + skip-list |
 | [Session artefacts](sessions.md) | what lands in `sessions/<id>/`: trace, errors, journal, stages.json |
 | [Editor / programmatic integration](editor-integration.md) | `dpe run --json --stats` event stream, `dpe log --stage`, `dpe check --plan` — what consumers can rely on |
 | [Caching](caching.md) | `ctx.cached(...)` — skip expensive work (LLM calls, big parses) when the same inputs have been seen before |
@@ -76,7 +77,7 @@ That's it. Each stage is a separate OS process; the runner wires stdout→stdin 
 | Component | Path | Purpose |
 |---|---|---|
 | **Runner + CLI** | `runner/` | `dpe` binary — spawns tools, wires pipes, traces, controls sessions |
-| **Dev CLI** | `dpe-dev/` | Tool authoring: `scaffold / build / test / verify / setup` |
+| **Dev CLI** | `dpe-dev/` | Tool authoring: `scaffold / build / test / check / setup` |
 | Rust framework | `frameworks/rust/` | SDK for writing tools in Rust (`combycode-dpe` crate) |
 | TypeScript framework | `frameworks/ts/` | SDK for Bun/TS (`@combycode/dpe-framework-ts`) |
 | Python framework | `frameworks/python/` | SDK for Python (`combycode-dpe` package) |

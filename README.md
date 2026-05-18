@@ -43,8 +43,9 @@ In-runner built-ins (no child process): [`route` · `filter` · `dedup` · `grou
 - [Installing](docs/installing.md) — npm, install script, Docker
 - [Concepts](docs/concepts.md) — envelopes, stages, DAG topology
 - [Writing pipelines](docs/writing-pipelines.md) — YAML variants, fan-in/out, route, filter, replicas, dedup
-- [CLI reference](docs/cli.md) — `init / run / check / install / tools / status / monitor`
-- [Authoring a tool](docs/authoring-a-tool.md) — scaffold → build → test → verify
+- [CLI reference](docs/cli.md) — `init / run / check / test / coverage / install / tools / status / monitor`
+- [Testing](docs/testing.md) — `dpe test` snapshot tests + `dpe coverage` per-pipeline report
+- [Authoring a tool](docs/authoring-a-tool.md) — scaffold → build → test
 - [Frameworks](docs/frameworks.md) — Rust, TypeScript / Bun, Python SDK reference
 - [Expressions](docs/expressions.md) — DSL for `route` / `filter` predicates
 - [Path prefixes](docs/path-prefixes.md) — `$input`, `$output`, `$session`, etc.
@@ -69,7 +70,7 @@ In-runner built-ins (no child process): [`route` · `filter` · `dedup` · `grou
 | Component | Path | Purpose |
 |---|---|---|
 | Runner + CLI | `runner/` | the `dpe` binary |
-| Tool-authoring CLI | `dpe-dev/` | `scaffold / build / test / verify / setup` |
+| Tool-authoring CLI | `dpe-dev/` | `scaffold / build / test / check / setup` |
 | Frameworks | `frameworks/{rust,ts,python}/` | language SDKs for writing tools |
 | Standard tools | `tools/<name>/` | the 7 shipped tools |
 | Docker | `docker/` | multi-stage base + dev images |

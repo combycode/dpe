@@ -90,8 +90,10 @@ dpe-dev scaffold --name my-tool --runtime bun --out ./my-tool --description "wha
 cd my-tool
 dpe-dev build .   # bun install
 dpe-dev test  .   # bun test
-dpe-dev verify .  # spawn `bun src/main.ts`, feed input.ndjson, diff stdout vs expected.ndjson
 ```
+
+End-to-end stage testing happens via `dpe test <pipeline>:<stage>` once the
+tool is wired into a pipeline — see `docs/testing.md`.
 
 ## Repo & licence
 

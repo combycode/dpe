@@ -206,7 +206,7 @@ Every stage tracks four counters in memory (`StageCounters` in
 | `meta` | `{"type":"trace", "channel":"meta"}` | Meta envelopes emitted via `ctx.meta()`. Separate counter so meta noise doesn't inflate `rows_out` for tools that emit summaries |
 | `errors` | `{"type":"error"}` | Errors emitted via `ctx.error()`. Persisted to `<session>/logs/<stage>_errors.log` with `t` and `sid` injected by the runner |
 
-Builtins (route / filter / dedup / group_by) feed into the same
+Builtins (route / filter / dedup / group-by) feed into the same
 counters from in-process executor wiring, not via stderr.
 
 ---

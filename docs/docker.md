@@ -17,7 +17,7 @@ pip) — it carries the full Rust compiler.
 /opt/dpe/
 ├── bin/
 │   ├── dpe                     # the runner / CLI
-│   ├── dpe-dev                 # scaffold / build / test / verify
+│   ├── dpe-dev                 # scaffold / build / test / check
 │   ├── catalog.json            # bundled tool catalog
 │   └── config.toml             # default config (tools_paths, registries)
 └── tools/                      # 7 standard tools
@@ -132,10 +132,10 @@ docker run --rm combycode/dpe-dev:latest rustc --version
 docker run --rm combycode/dpe-dev:latest cargo clippy --version
 docker run --rm combycode/dpe-dev:latest claude --version
 
-# Scaffold + verify a tool inside the container
+# Scaffold + smoke-build a tool inside the container
 docker run --rm combycode/dpe-dev:latest bash -c '
     dpe-dev scaffold --name hello --runtime bun --out /tmp/hello --description smoke
-    cd /tmp/hello && dpe-dev build . && dpe-dev verify .
+    cd /tmp/hello && dpe-dev build . && dpe-dev test .
 '
 ```
 

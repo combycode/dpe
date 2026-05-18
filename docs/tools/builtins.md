@@ -30,6 +30,7 @@ router:
 ```
 
 - `routes` — map `channel_name → expression`. Expressions see `env` (whole envelope) and `v` (env.v). See [expressions](../expressions.md).
+- Expressions evaluate `v` as-is from the envelope. **Path fields arrive in token form** (`$input/...`), not as resolved absolute paths — use token form in expressions. See [path token contract](../path-prefixes.md#built-in-expressions-see-tokenized-form).
 - Evaluation is **declaration order**; first truthy channel wins; no envelope is ever sent to two channels.
 - `on_error: drop` (default) — runtime error evaluating an expression → channel skipped; if no channel matches → envelope dropped.
 - `on_error: pass` — runtime error → forward envelope to the *next* channel's test.
@@ -74,7 +75,7 @@ keep-valid:
   input: upstream
 ```
 
-- `expression` — evaluates against `env` / `v`. Kept iff truthy.
+- `expression` — evaluates against `env` / `v`. Kept iff truthy. Path fields in `v` are in token form (`$input/...`) — use token form in expressions. See [path token contract](../path-prefixes.md#built-in-expressions-see-tokenized-form).
 - `on_false: drop` (default) — dropped envelopes disappear silently.
 - `on_false: emit-meta` — drops the data envelope but emits `{t:"m", v:{kind:"filter_drop", id, src}}` downstream so downstream can observe (reserved; currently behaves as drop).
 - `on_false: emit-stderr` — emits `{type:"error"}` to `<stage>_errors.log` (reserved).

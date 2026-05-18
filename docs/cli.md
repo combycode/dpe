@@ -15,6 +15,19 @@ file. Resolution order (first hit wins):
 5. `<dpe-binary-dir>/config.toml` — portable / ad-hoc installs
 6. Built-in defaults
 
+### Global flags
+
+| Flag | Purpose |
+|---|---|
+| `--config <PATH>` | Runner config file (resolution order above) |
+| `--env-file <PATH>` | Load env vars from a `.env`-style file before running. Repeatable. **First occurrence wins**, and any var **already in the process environment is never overridden** (CI secrets stay authoritative). Path must exist — there is no silent CWD pickup. Loaded once at startup, so every subcommand sees the values. |
+
+`--env-file` example:
+```sh
+dpe --env-file .env run my-pipeline:main -i ./input -o ./output
+dpe --env-file .env --env-file .env.local test my-pipeline    # merge two files
+```
+
 Target syntax for commands that take one:
 ```
 <pipeline-dir>:<variant-name>
@@ -122,7 +135,7 @@ Each snapshot's `stages` map is keyed by sid; the value is a
 
 Pending → Running is derived from `rows_in > 0`. Terminal transitions
 come from child exit codes (single/replicas) or builtin task results
-(route/filter/dedup/group_by). See [concepts.md](concepts.md#per-stage-state-machine).
+(route/filter/dedup/group-by). See [concepts.md](concepts.md#per-stage-state-machine).
 
 ### Exit codes
 
@@ -163,6 +176,255 @@ CI use:
 ```sh
 dpe check --all my-pipeline || exit 1
 ```
+
+---
+
+## `test`
+
+Per-stage isolated snapshot test. Spawns ONE stage as a child process
+(no DAG), pipes `tests/<variant>/<stage>/<case>/input/seed.ndjson` to
+its stdin, captures every output channel, and runs four diff steps
+(channel shape → filesystem tree → per-channel envelope diff → optional
+assert script). Multi-phase test cases are supported.
+
+Full per-case schema, channel semantics, multi-phase examples, and
+matcher / mode reference live in [testing.md](testing.md). This page
+is the CLI surface.
+
+```sh
+dpe test my-pipeline:main:scan                       # every case under the stage
+dpe test my-pipeline:main:scan:case-baseline         # one case
+dpe test my-pipeline:main                            # bulk: every stage of variant
+dpe test my-pipeline                                 # bulk: every variant × stage
+dpe test :main:scan                                  # leading `:` = cwd as pipeline
+dpe test .:main:scan                                 # `.` = same
+```
+
+Target syntax: `[<pipeline>:]<variant>:<stage>[:<case>]`. Empty/`.`
+pipeline = current directory. 1- or 2-part target = bulk; 3- or 4-part
+= stage-explicit (skip-list and `test_exclusive` BYPASSED).
+
+### Layout
+
+```
+my-pipeline/tests/<variant>/<stage>/<case>/
+├── test.yaml                   # optional; per-case spec (full schema in testing.md)
+├── input/seed.ndjson           # one envelope per line; piped to stdin
+├── expected/                   # reference: per-channel ndjson + filesystem tree
+│   ├── data.ndjson             # t="d" envelopes
+│   ├── meta.ndjson             # t="m" envelopes (only if asserted)
+│   ├── errors.ndjson           # stderr type="error" (only if asserted)
+│   └── output/                 # files the tool wrote under $output
+├── assert.py                   # optional assertion script
+└── .run/                       # per-test ephemerals; gitignored
+    ├── actual/                 # ← runner writes captured streams here
+    │   ├── data.ndjson
+    │   ├── meta.ndjson
+    │   ├── errors.ndjson
+    │   ├── logs.ndjson
+    │   ├── trace.ndjson
+    │   └── stats.ndjson
+    ├── temp/                   # $temp
+    ├── session/                # $session
+    ├── storage/                # $storage (cache + batch state live here)
+    └── output/                 # $output
+```
+
+For multi-phase cases, `expected/` contains one subdir per phase:
+`expected/<phase.name>/`. `.run/` is wiped ONCE at case start;
+`.run/actual/` is re-wiped between phases (so `output/`, `temp/`,
+`storage/`, `session/` persist across phases).
+
+### `test.yaml` skeleton
+
+```yaml
+# All fields optional. Empty file = inherit; auto-detect channels from
+# expected file presence.
+
+settings_override: { marker: "TEST:" }
+env:               { ANTHROPIC_API_KEY: "${REAL_KEY}" }
+cache:             bypass                       # use | refresh | bypass | off
+
+compare:
+  channels: ["data", "meta"]                    # opt-in or auto-detect
+  global:
+    scrub_paths:
+      - { from: "msgbatch_[A-Za-z0-9]+", to: "msgbatch_<ID>" }
+      - { from: "<run_dir>",             to: "<run>" }
+  data:
+    ignore_envelope: ["id", "src"]
+    matchers:
+      - { path: "v.duration_ms", kind: "is_int" }
+      - { path: "v.batch_id",    kind: "regex", pattern: "^msgbatch_" }
+  fs_check:  ["output"]
+  files:
+    - { path: "output/summary.md", mode: "fuzzy", threshold_pct: 5 }
+    - { path: "output/report.json", mode: "schema", schema: "expected/output/report.schema.json" }
+
+assert:
+  engine: "python"          # python | bun | node
+  script: "assert.py"
+  timeout_ms: 30000
+
+phases:                                          # optional — multi-shot
+  - name: "cold", cache: bypass, expected: "expected/cold"
+  - name: "warm", cache: use,    expected: "expected/warm"
+```
+
+See [testing.md § channels](testing.md#channels) for the six channel
+sources and the strict/opt-in distinction; § how the diff works for
+the four steps; § multi-phase tests for cache / batch / idempotency
+patterns.
+
+### Output
+
+```
+PASS    main:scan:case-baseline      (12ms)
+FAIL    main:scan:case-edge          (8ms)
+        Step 1 — channel shape:
+          • channel 'meta' declared in compare.channels but expected/meta.ndjson is missing
+        Step 3 — channel diff:
+          channel 'data':
+            --- expected
+            +++ actual
+            -{"t":"d","v":{"path":"a"}}
+            +{"t":"d","v":{"path":"b"}}
+SKIP    main:gate:case-baseline      (skip-list: gate)
+
+Summary: 1 passed, 1 failed, 1 skipped  in 0.02s
+```
+
+For multi-phase cases each phase's failure block is prefixed `── phase "name" ──`.
+
+### Snapshot regeneration
+
+```sh
+dpe test my:main:scan --update                   # rewrite expected/ from canonicalised actual
+dpe test my:main:scan --update-if-missing        # only write if expected file absent
+```
+
+`--update` and `--update-if-missing` are mutually exclusive. Each
+non-empty actual channel (`data` / `meta` / `errors` / etc.) is
+canonicalised (envelope `id`+`src` stripped, `ignore_fields` dropped,
+matchers replaced with sentinels, JSON keys sorted, `scrub_paths`
+applied) and written as `expected/<channel>.ndjson`. Always review
+the resulting `git diff` before committing.
+
+For multi-phase cases, `--update` writes to `expected/<phase.name>/`.
+Filesystem-tree expectations under `expected/<subdir>/` are NOT
+auto-generated — author them manually.
+
+### Cache override
+
+```sh
+dpe test my:main:llm --cache bypass               # this run hits the model every time
+dpe test my-pipeline --cache refresh              # bulk: refresh all caches
+```
+
+Modes: `use` (default — read cache, write on miss) | `refresh` (ignore on read, write fresh) | `bypass` (ignore on read, ignore on write) | `off` (never read, never write).
+
+Precedence (highest first): **CLI `--cache <mode>`** → **`test.yaml` `cache:` field** → **default (`use`)**. `--cache` applies uniformly to bulk runs (every case in the bulk inherits it).
+
+Use `cache: bypass` in `test.yaml` when a case is *inherently* a stability test (committed, reviewable). Use `--cache` for ad-hoc overrides ("rerun all snapshots without cache once before release").
+
+### Bulk-run filters
+
+In bulk mode (target with no explicit stage — 1- or 2-part target),
+two filters apply automatically:
+
+| Filter | Behaviour |
+|---|---|
+| **Skip-list** | `toggle`, `gate`, `checkpoint`, `dedup` are silently skipped — control-layer plumbing isn't worth a snapshot test on its own; the variants that USE these stages get tested as part of the surrounding settings flow. |
+| **`test_exclusive`** | A tool's `meta.json` may declare `test_exclusive: true`. Bulk runs skip such stages so they don't fail when their host environment is missing. Run them by naming the stage explicitly (3- or 4-part target). |
+
+Stage-explicit targets (3- or 4-part) BYPASS both filters — the user
+asked for that stage, the runner respects that.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | All cases PASS or UPDATED (or only skipped) |
+| 1 | Any FAIL (snapshot mismatch) |
+| 2 | Any ERROR (invocation problem — bad target, missing variant, spawn failure). Wins over FAIL. |
+
+CI use:
+```sh
+dpe test my-pipeline || exit 1
+```
+
+---
+
+## `coverage`
+
+Snapshot-test coverage matrix for a pipeline. Informational — never gates.
+
+```sh
+dpe coverage my-pipeline                 # every variant
+dpe coverage my-pipeline:main            # one variant
+dpe coverage .:main                      # cwd as pipeline
+dpe coverage my-pipeline --json          # machine-readable
+```
+
+Target syntax: `<pipeline>[:<variant>]`. `stage` and `case` parts are
+ignored if present.
+
+### Buckets
+
+| Symbol | Bucket | In numerator | In denominator |
+|:---:|---|:---:|:---:|
+| ✓ | `covered` | yes | yes |
+| ◐ | `excl+covered` (`test_exclusive=true` AND has tests) | yes | yes |
+| ◔ | `excl+uncovered` (`test_exclusive=true` AND no tests) | no | yes |
+| ✗ | `uncovered` (no tests) | no | yes |
+| ⊘ | `skip-list` (control-layer tool) OR `test-skipped` | excluded | excluded |
+
+Coverage % = (✓ + ◐) / (✓ + ◐ + ◔ + ✗). ⊘ stages don't count either way.
+
+### Output
+
+```
+variant: 02-read-normalize-write
+  ✗  read
+  ✗  sink
+  ✓  upper  2 cases
+  1/3 covered (33%)
+
+variant: 03-gate-checkpoint
+  ⊘  check  (skip-list: checkpoint)
+  ⊘  gate   (skip-list: gate)
+  ✗  read
+  ✗  sink
+  0/2 covered (0%)
+
+Total: 1/13 covered (8%)
+```
+
+### `--json`
+
+```json
+{
+  "variants": [
+    {
+      "variant": "02-read-normalize-write",
+      "stages": [
+        {"stage":"read","tool":"read-file-stream","bucket":"uncovered","case_count":0},
+        {"stage":"sink","tool":"write-file-stream","bucket":"uncovered","case_count":0},
+        {"stage":"upper","tool":"normalize","bucket":"covered","case_count":2}
+      ],
+      "covered": 1, "total": 3, "pct": "33.3"
+    }
+  ],
+  "covered": 1, "total": 13, "pct": "7.7"
+}
+```
+
+`bucket` is one of: `covered`, `skip_list`, `test_skipped`, `exclusive_covered`, `exclusive_uncovered`, `uncovered`. `pct` is formatted to one decimal place as a string (rounded). The skip-listed tool's name lives in the sibling `tool` field — `bucket` is just the bucket kind.
+
+Exit always 0 — this command reports, it doesn't enforce.
+
+For the full testing guide (layout, writing cases, fixtures, troubleshooting),
+see [Testing](testing.md).
 
 ---
 
@@ -346,7 +608,7 @@ dpe tools list --json         # machine-readable; used by the dag-editor
 ```
 
 JSON shape includes every catalog entry, every path-discovered tool,
-and the four builtins (`route`, `filter`, `dedup`, `group_by`). Used
+and the six builtins (`route`, `filter`, `dedup`, `group-by`, `spread`, `toggle`). Used
 by editors to populate a tool palette without re-implementing the
 resolution logic.
 

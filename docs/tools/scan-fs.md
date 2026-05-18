@@ -30,8 +30,43 @@ scan:
     hash:            xxhash     # xxhash | blake2b | none
     min_size:        null       # filter files smaller than (bytes)
     max_size:        null
+    passthrough_input: false    # carry input v fields onto every emitted entry
   input: $input
 ```
+
+### `passthrough_input`
+
+When `true`, every field on the input envelope's `v` is copied onto every emitted entry. Reserved keys (those scan-fs consumes itself) are excluded:
+
+| Mode | Reserved keys |
+|---|---|
+| `full` | `path` |
+| `diff` | `kind`, `root`, `directory`, `filename`, `ext`, `size`, `created`, `changed`, `hash` |
+
+scan-fs's own fields take precedence on key collision — a passthrough `filename: "hijacked"` is overwritten by the scanned entry's actual filename. Use this flag to attach upstream tags (e.g. `category`, `batch_tag`) without a downstream `normalize` step:
+
+```yaml
+scan:
+  tool: scan-fs
+  settings: { include: "*.xlsx", hash: blake2b, passthrough_input: true }
+  input: $input
+```
+
+```json
+// input
+{"t":"d","v":{"path":"/data/contracts","category":"contracts","batch_tag":"b19"}}
+
+// output (per file under /data/contracts)
+{"t":"d","v":{
+  "category":  "contracts",       // ← from input
+  "batch_tag": "b19",             // ← from input
+  "kind": "file", "root": "/data/contracts/",
+  "directory": "", "filename": "doc1", "ext": "xlsx",
+  "size": 12345, "created": ..., "changed": ..., "hash": "..."
+}}
+```
+
+In `diff` mode the same flag controls whether user fields on the prior record carry through to the `Modified` envelope. The `Removed` envelope always preserves the prior `v` as-is (with `action: "removed"` injected) — passthrough is the natural behaviour there.
 
 ## Output — files
 

@@ -182,7 +182,7 @@ Each rule's error is handled according to:
 | `error` | Emit stderr error event + drop |
 | `quarantine` | Route to error sink + drop |
 
-## Worked example — reconciliation + transactions pipeline
+## Worked example — inventory + event pipeline
 
 One normalize stage handles both file types via profiles:
 
@@ -202,8 +202,8 @@ rules:
     op: dict
     map:
       "Дата":             "date"
-      "Оборот, EUR":      "turnover"
-      "/^Вознаграждение.*/": "fee"
+      "Количество":       "quantity"
+      "/^Категория.*/":   "category"
     default: passthrough
   - op: to_object
     keys: v.columns
@@ -214,7 +214,7 @@ rules:
     op: unwrap_formulas
   - path: v.row
     op: keep_fields
-    fields: [date, turnover, fee, payout, debt]
+    fields: [date, quantity, category, owner, status]
   - path: v.row.date
     op: parse_date
     formats: ["%Y-%m-%d"]
@@ -225,17 +225,17 @@ rules:
   - path: v
     op: add_field
     field: doc_kind
-    value: reconciliation
+    value: inventory
 ```
 
 ```yaml
-# flat.rules.yaml — English headers → canonical, datetime + currency
+# flat.rules.yaml — English headers → canonical, datetime + unit
 rules:
   - path: v.columns
     op: dict
     map:
-      "commission": "fee"
-      "Amount":     "amount"
+      "qty":   "quantity"
+      "Item":  "item"
     default: passthrough
   - op: to_object
     keys: v.columns
@@ -246,15 +246,15 @@ rules:
     op: parse_date
     formats: ["%Y-%m-%d %H:%M:%S"]
     output: iso
-  - path: v.row.currency
-    op: normalize_currency
+  - path: v.row.unit
+    op: collapse_whitespace
   - path: v.row
     op: require
-    fields: [txn_id, date, amount, currency]
+    fields: [event_id, date, item, quantity, unit]
   - path: v
     op: add_field
     field: doc_kind
-    value: transactions
+    value: events
 ```
 
 Same stage, zero route splitting, different rulebooks per envelope type.

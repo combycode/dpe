@@ -24,22 +24,21 @@ powershell -File scripts/new-tool.ps1 uppercase-text bun fixtures/uppercase-text
 2–5 minutes later you have a tool directory under `tool-experiments/tools/<name>/` with:
 
 - Source code implementing the spec
-- Unit tests covering the happy and edge paths
-- `verify/<case>/` directories one-per-test-case from the spec
-- All three checks passing: `dpe-dev build`, `dpe-dev test`, `dpe-dev verify`
+- Unit tests covering the happy and edge paths (one per `tests[]` entry in spec.yaml)
+- Both checks passing: `dpe-dev build`, `dpe-dev test`
 
 The script does:
 
 1. **scaffold** — copies the matching framework template, substitutes `{{tool_name_kebab}}`, `{{tool_name_snake}}`, `{{description}}`, `{{framework_path}}`, `{{framework_abs_path}}`.
 2. **copy spec** — drops your `spec.yaml` into the tool directory as the authoritative description.
-3. **claude headless** — invokes `claude -p` with `--permission-mode bypassPermissions`, loads the `.claude/skills/dpe-tool/SKILL.md` skill, and lets the agent loop until `build + test + verify` all exit 0.
-4. **independent verification** — re-runs `dpe-dev build / test / verify` from the wrapper, fails hard on any non-zero exit, so a stuck agent can't silently leave a broken tool.
+3. **claude headless** — invokes `claude -p` with `--permission-mode bypassPermissions`, loads the `.claude/skills/dpe-tool/SKILL.md` skill, and lets the agent loop until `build + test` both exit 0.
+4. **independent verification** — re-runs `dpe-dev build / test` from the wrapper, fails hard on any non-zero exit, so a stuck agent can't silently leave a broken tool.
 
 ---
 
 ## spec.yaml — single source of truth
 
-The spec file describes the tool. Templates, tests, and verify cases are derived from it.
+The spec file describes the tool. Templates and tests are derived from it.
 
 Minimum viable shape:
 
@@ -97,15 +96,17 @@ tests:
 
 ### How tests drive verification
 
-Each `tests[i]` entry lands in `verify/<name>/` as three files:
+Each `tests[i]` entry becomes a language-native unit test under `tests/`:
 
-- `settings.json` — pretty-printed from `settings`
-- `input.ndjson` — each `input[]` entry on its own line
-- `expected.ndjson` — each `expected[]` entry on its own line
+| Runtime | Test layout |
+|---|---|
+| Rust   | `tests/<case>.rs` — `assert_cmd` or `std::process::Command` spawns `target/release/<name>`, pipes input, diffs stdout |
+| Bun    | `tests/<case>.test.ts` — `Bun.spawn(["bun", "src/main.ts", settings])`, pipes input, diffs stdout |
+| Python | `tests/test_<case>.py` — `subprocess.run([...]).stdout` and a canonical-JSON diff helper |
 
-`dpe-dev verify .` walks every subdirectory of `verify/`, spawns the built tool, pipes `input.ndjson` to stdin with `settings.json` as argv[1], captures stdout, and line-by-line canonical-JSON compares against `expected.ndjson`. Any mismatch fails the case.
+Each test should compare stdout line-by-line as **canonical JSON** (sorted keys), so envelope key order in expected vs actual doesn't matter. The framework templates ship a placeholder test in each language; the Claude skill's per-runtime reference (`references/{rust,bun,python}.md`) shows the canonical-diff pattern.
 
-Canonical JSON = `serde_json` with sorted keys — object-key order in expected vs actual doesn't matter.
+For pipeline-context testing (stage in a real variant, with cache/env/settings_override), use `dpe test <pipeline>:<variant>:<stage>:<case>` — see `dpe test --help` and `coverage` for the snapshot-test workflow.
 
 ---
 
@@ -156,7 +157,6 @@ Single Rust binary built from the `dpe-dev/` workspace member (`dpe-dev/target/r
 dpe-dev scaffold --name <n> --runtime <r> --out <dir> [--description "..."] [--frameworks-dir <path>]
 dpe-dev build    <tool-dir>    # runtime-aware: cargo build --release / bun install / pip install -e .
 dpe-dev test     <tool-dir>    # cargo test / bun test / pytest
-dpe-dev verify   <tool-dir>    # spawn tool, feed verify cases, diff stdout
 dpe-dev check    <tool-dir>    # static: meta.json parses, spec.yaml parses
 ```
 
@@ -237,15 +237,14 @@ dpe-dev scaffold --name my-tool --runtime bun --out ./tools/my-tool --descriptio
 # Copy spec in manually (or author it in place)
 cp path/to/spec.yaml ./tools/my-tool/spec.yaml
 
-# Edit src/main.*, tests/, verify/ by hand
+# Edit src/main.*, tests/ by hand
 
 # Run the same verification cycle
-dpe-dev build  ./tools/my-tool
-dpe-dev test   ./tools/my-tool
-dpe-dev verify ./tools/my-tool
+dpe-dev build ./tools/my-tool
+dpe-dev test  ./tools/my-tool
 ```
 
-Same exit criteria: all three zero = done.
+Same exit criteria: both zero = done.
 
 ---
 

@@ -78,7 +78,7 @@ These are callable like functions:
 | `starts_with(s, prefix)` | bool | `starts_with(v.name, "test_")` |
 | `ends_with(s, suffix)` | bool | `ends_with(v.filename, ".pdf")` |
 | `contains(s, needle)` | bool | `contains(v.title, "summary")` |
-| `normalize(s)` | lowercase + trim | `normalize(v.vendor) == "acme"` |
+| `normalize(s)` | lowercase + trim | `normalize(v.vendor) == "alpha"` |
 
 (Reserved built-ins you'll see used: `includes`, `all`, `any` — check the source for the current exact list.)
 

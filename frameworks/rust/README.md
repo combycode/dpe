@@ -98,8 +98,10 @@ dpe-dev scaffold --name my-tool --runtime rust --out ./my-tool --description "wh
 cd my-tool
 dpe-dev build .   # cargo build --release
 dpe-dev test  .   # cargo test
-dpe-dev verify .  # spawn the binary, feed input.ndjson, diff stdout vs expected.ndjson
 ```
+
+End-to-end stage testing happens via `dpe test <pipeline>:<stage>` once the
+tool is wired into a pipeline — see `docs/testing.md`.
 
 ## Repo & licence
 
