@@ -181,13 +181,39 @@ fn plan_stage(
             reason: format!("resolve: {}", e),
         })?;
 
-    // Pre-pass: interpolate ${VAR} / ${VAR:-default} across ALL stage
+    // Pass 0: validate declared env vars.
+    // `stage.env` lists vars required at runtime. With ProcessEnv an unset
+    // var returns None → hard error here so the user gets a clear message
+    // before the pipeline starts. With AllowUndefinedEnv (editor mode) every
+    // get() returns Some("") → check is skipped transparently.
+    if let Some(required_envs) = &stage.env {
+        for var_name in required_envs {
+            if env.get(var_name).is_none() {
+                return Err(DagError::Stage {
+                    stage: name.into(),
+                    reason: format!(
+                        "required env var '{}' is not set (declared in stage.env)",
+                        var_name
+                    ),
+                });
+            }
+        }
+    }
+
+    // Pass 1: interpolate ${VAR} / ${VAR:-default} across ALL stage
     // config strings — settings, expression (filter), routes channel
     // expressions (route), dedup config, group_by config. Topology
     // fields (tool, input, settings_file, etc.) are intentionally
     // skipped: interpolating those would mask DAG-validation errors.
     // Strict-brace syntax keeps $prefix and Mongo $set untouched.
     let stage = interpolate_stage_config(name, stage, env)?;
+
+    // Pass 2a: PathResolver substring replacement in expression and route
+    // values. Handles `$input`, `$output`, etc. appearing INLINE within
+    // expression strings (e.g. `v.path.startsWith("$input/data")`).
+    // Runs AFTER env_interp so composed tokens like `${ROOT}/$input/x`
+    // have their ${} portion already substituted.
+    let stage = resolve_stage_expressions(&stage, static_resolver)?;
 
     let kind = kind_for_stage(name, &stage, &tool.invocation, env)?;
 
@@ -220,7 +246,7 @@ fn plan_stage(
 /// NOT interpolated (DAG topology / typed-only fields):
 /// - `tool`, `input`, `settings_file`, `replicas`, `replicas_routing`,
 ///   `trace`, `cache`, `on_error`, `on_false`.
-fn interpolate_stage_config(
+pub(crate) fn interpolate_stage_config(
     name: &str,
     stage: &Stage,
     env: &dyn crate::env_interp::EnvLookup,
@@ -271,6 +297,30 @@ fn interpolate_stage_config(
         })?);
     }
 
+    Ok(s)
+}
+
+/// Apply PathResolver substring replacement to the expression and route values
+/// of a stage. Used after env_interp so that `$input`, `$output`, etc. inside
+/// filter/route expressions are expanded to absolute paths.
+///
+/// Settings are intentionally NOT handled here — they go through
+/// `resolve_in_value` which handles the case where the ENTIRE value is a
+/// `$prefix/...` path. Expressions need substring replacement since tokens
+/// appear inline inside the expression string.
+pub(crate) fn resolve_stage_expressions(
+    stage:    &Stage,
+    resolver: &PathResolver,
+) -> Result<Stage, DagError> {
+    let mut s = stage.clone();
+    if let Some(expr) = s.expression.as_mut() {
+        *expr = resolver.resolve_in_string(expr);
+    }
+    if let Some(routes) = s.routes.as_mut() {
+        for value in routes.values_mut() {
+            *value = resolver.resolve_in_string(value);
+        }
+    }
     Ok(s)
 }
 
@@ -404,6 +454,7 @@ mod tests {
             trace: true, cache: Some(CacheMode::Use),
             on_error: OnError::Drop,
             routes: None, expression: None, on_false: None, dedup: None, group_by: None,
+            env: None,
         }
     }
     fn variant(stages: Vec<(&str, Stage)>) -> ResolvedVariant {
@@ -722,6 +773,111 @@ mod tests {
             let dedup = plan.stages.get("d").unwrap().stage_def.dedup.as_ref().unwrap();
             assert_eq!(dedup.index_name, "tenant-7-files");
         });
+    }
+
+    // ─── PathResolver in expressions / routes ────────────────────────
+
+    #[test]
+    fn path_resolver_applied_to_filter_expression() {
+        // $input inside a filter expression must be expanded to the absolute
+        // path via PathResolver.resolve_in_string AFTER env_interp.
+        let mut filt = stg("filter", Some(Input::One("$input".into())));
+        filt.expression = Some(r#"v.path.startsWith("$input/data")"#.into());
+
+        let v = variant(vec![("f", filt)]);
+        let resolver = PathResolver::default().with("input", "/abs/input");
+        let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &resolver).unwrap();
+        let f = plan.stages.get("f").unwrap();
+        assert_eq!(
+            f.stage_def.expression.as_deref(),
+            Some(r#"v.path.startsWith("/abs/input/data")"#),
+        );
+    }
+
+    #[test]
+    fn path_resolver_applied_to_route_channel_values() {
+        // $storage inside a route expression must be expanded.
+        let mut rt = stg("route", Some(Input::One("$input".into())));
+        let mut routes = indexmap::IndexMap::new();
+        routes.insert("cached".into(), r#"v.cache_path.startsWith("$storage")"#.into());
+        routes.insert("fallback".into(), "true".into());
+        rt.routes = Some(routes);
+
+        let v = variant(vec![("r", rt)]);
+        let resolver = PathResolver::default().with("storage", "/abs/store");
+        let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &resolver).unwrap();
+        let r = plan.stages.get("r").unwrap();
+        let routes = r.stage_def.routes.as_ref().unwrap();
+        assert_eq!(
+            routes.get("cached").map(|s| s.as_str()),
+            Some(r#"v.cache_path.startsWith("/abs/store")"#),
+        );
+        assert_eq!(routes.get("fallback").map(|s| s.as_str()), Some("true"));
+    }
+
+    #[test]
+    fn path_resolver_unknown_token_in_expression_passes_through() {
+        // $set in an expression should not be touched (Mongo operator).
+        let mut filt = stg("filter", Some(Input::One("$input".into())));
+        filt.expression = Some("v.op == \"$set\"".into());
+
+        let v = variant(vec![("f", filt)]);
+        let resolver = PathResolver::default().with("input", "/abs/input");
+        let plan = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &resolver).unwrap();
+        let f = plan.stages.get("f").unwrap();
+        assert_eq!(f.stage_def.expression.as_deref(), Some("v.op == \"$set\""));
+    }
+
+    // ─── stage.env validation ────────────────────────────────────────
+
+    #[test]
+    fn env_validation_fails_for_missing_required_var() {
+        // stage.env declares BATCH as required. ProcessEnv won't find it
+        // if it's not set, so compile() should error.
+        let key = "DPE_TEST_STAGE_ENV_MISSING_XYZABC";
+        std::env::remove_var(key); // ensure not set
+        let mut filt = stg("filter", Some(Input::One("$input".into())));
+        filt.expression = Some("true".into());
+        filt.env = Some(vec![key.to_string()]);
+
+        let v = variant(vec![("f", filt)]);
+        let err = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver())
+            .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains(key), "expected missing-var message, got: {}", msg);
+    }
+
+    #[test]
+    fn env_validation_passes_when_var_is_set() {
+        let key = "DPE_TEST_STAGE_ENV_SET_XYZABC";
+        // SAFETY: unique key — no test collision.
+        unsafe { std::env::set_var(key, "some-value"); }
+        let mut filt = stg("filter", Some(Input::One("$input".into())));
+        filt.expression = Some("true".into());
+        filt.env = Some(vec![key.to_string()]);
+
+        let v = variant(vec![("f", filt)]);
+        let result = compile(&v, dummy_dir().path(), &RunnerConfig::default(), &empty_resolver());
+        unsafe { std::env::remove_var(key); }
+        assert!(result.is_ok(), "expected compile to succeed, got: {:?}", result.err());
+    }
+
+    #[test]
+    fn env_validation_skipped_with_allow_undefined_env() {
+        // AllowUndefinedEnv returns Some("") for all vars — env validation
+        // must never fail in editor-mode (dpe check --allow-undefined-env).
+        let key = "DPE_TEST_STAGE_ENV_ALLOW_XYZABC";
+        std::env::remove_var(key);
+        let mut filt = stg("filter", Some(Input::One("$input".into())));
+        filt.expression = Some("true".into());
+        filt.env = Some(vec![key.to_string()]);
+
+        let v = variant(vec![("f", filt)]);
+        let result = compile_with_env(
+            &v, dummy_dir().path(), &RunnerConfig::default(),
+            &empty_resolver(), &crate::env_interp::AllowUndefinedEnv,
+        );
+        assert!(result.is_ok(), "AllowUndefinedEnv must skip env validation, got: {:?}", result.err());
     }
 
     #[test]

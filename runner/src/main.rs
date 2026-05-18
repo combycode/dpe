@@ -10,6 +10,15 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Load env vars from a `.env`-style file before running. Repeat to
+    /// load several files; the FIRST occurrence of a key wins, and any
+    /// var already in the process environment is NEVER overridden (CI
+    /// secrets stay authoritative). The path must exist — there is no
+    /// silent CWD pickup. Loaded once at startup, so every subcommand
+    /// (run / test / check / log / etc.) sees the values.
+    #[arg(long = "env-file", global = true, value_name = "PATH")]
+    env_file: Vec<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -207,6 +216,66 @@ enum Command {
         #[command(subcommand)]
         sub: ConfigCmd,
     },
+    /// Run a per-stage isolated snapshot test.
+    ///
+    /// Spawns ONE stage in isolation (no DAG), pipes
+    /// `tests/<variant>/<stage>/<case>/input/seed.ndjson` to its stdin,
+    /// captures stdout, and diffs against
+    /// `tests/<variant>/<stage>/<case>/expected/data.ndjson` after
+    /// canonicalising both sides (strip envelope `id`+`src`, sort keys).
+    ///
+    /// Target syntax: `[<pipeline>:]<variant>:<stage>[:<case>]`. The
+    /// pipeline part may be empty/`.` to use the current directory; the
+    /// case part defaults to `case-baseline` when omitted.
+    ///
+    /// Exit: 0 on PASS / UPDATED, 1 on FAIL, 2 on invocation error.
+    Test {
+        /// `[<pipeline>:]<variant>:<stage>[:<case>]`
+        target: String,
+        /// Snapshot regeneration: rewrite `expected/data.ndjson` from
+        /// the captured actual on every run. Output is canonicalised
+        /// (envelope `id`+`src` stripped, JSON keys sorted) so the
+        /// committed snapshot stays stable across machines.
+        /// Mutually exclusive with `--update-if-missing`. Review the
+        /// resulting `git diff` before committing.
+        #[arg(long, conflicts_with = "update_if_missing")]
+        update: bool,
+        /// Like `--update`, but only writes when the expected file
+        /// doesn't already exist. Safer for shared / CI use — it can
+        /// never silently rewrite an existing snapshot. Useful for
+        /// first-run new cases.
+        #[arg(long = "update-if-missing", conflicts_with = "update")]
+        update_if_missing: bool,
+        /// Cache mode for the spawned stage (`use` | `refresh` | `bypass` | `off`).
+        /// Useful for stability tests that must hit the real tool every run
+        /// (e.g. LLM determinism checks → `--cache bypass`). When omitted,
+        /// per-case `cache:` in `test.yaml` wins; otherwise default = `use`.
+        /// Precedence: CLI flag > `test.yaml` > default. Applies uniformly
+        /// to bulk runs (every case in the bulk inherits it).
+        #[arg(long, value_name = "MODE")]
+        cache: Option<String>,
+    },
+    /// Show snapshot-test coverage for every stage in a pipeline.
+    ///
+    /// For each variant x stage, assigns one of five buckets:
+    ///   checkmark  covered          - has snapshot tests (counts in numerator + denominator)
+    ///   circle     skip-list        - control-layer tool, excluded from % entirely
+    ///   half-left  excl+covered     - test_exclusive=true AND has tests (counts in both)
+    ///   half-right excl+uncovered   - test_exclusive=true AND no tests (denominator only)
+    ///   cross      uncovered        - no tests (denominator only)
+    ///
+    /// Coverage % = (covered + excl-covered) / (covered + excl-covered + excl-uncovered + uncovered).
+    ///
+    /// Exit: 0 always (coverage is informational, not a gate).
+    Coverage {
+        /// `<pipeline>[:<variant>]` -- omit variant to report all variants.
+        /// Empty / `.` means the current directory.
+        target: String,
+        /// Emit JSON to stdout instead of human-readable text.
+        /// Shape: `{"variants":[...],"covered":N,"total":N,"pct":F}`.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -242,6 +311,28 @@ enum ConfigCmd {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Load --env-file files BEFORE anything else, so config loading,
+    // path resolution, env interpolation in settings, and child-process
+    // spawn all see the loaded vars. dotenvy::from_path does NOT override
+    // already-set vars by default, which is exactly what we want — CI
+    // secrets, host shell exports, and `set -a; source .env` patterns
+    // stay authoritative over checked-in `.env` files.
+    for path in &cli.env_file {
+        // Surface "file not found" up front with a clear message --
+        // dotenvy's own error mapping wraps everything as a generic io
+        // error, which makes typos like `--env-file .env.local` (when
+        // only `.env.dev` exists) hard to debug.
+        if !path.exists() {
+            return Err(anyhow::anyhow!(
+                "--env-file {} not found", path.display(),
+            ));
+        }
+        dotenvy::from_path(path).map_err(|e| anyhow::anyhow!(
+            "loading --env-file {}: {}", path.display(), e
+        ))?;
+    }
+
     let cfg = dpe::load_config(cli.config.as_deref())?;
 
     match cli.command {
@@ -270,7 +361,242 @@ fn main() -> anyhow::Result<()> {
             ConfigCmd::AddPath { path } => cmd_config_add_path(&path),
             ConfigCmd::Path        => cmd_config_path(),
         },
+        Command::Test { target, update, update_if_missing, cache }
+            => cmd_test(&target, update, update_if_missing, cache.as_deref(), &cfg),
+        Command::Coverage { target, json }
+            => cmd_coverage(&target, json, &cfg),
     }
+}
+
+/// `dpe test <target>` — per-stage snapshot test runner.
+fn cmd_test(
+    target: &str,
+    update: bool,
+    update_if_missing: bool,
+    cache: Option<&str>,
+    cfg: &dpe::RunnerConfig,
+) -> anyhow::Result<()> {
+    use dpe::test_runner::{parse_target, run_many, ResultKind, UpdateMode};
+    use dpe::types::CacheMode;
+
+    let cwd = std::env::current_dir()?;
+    let parsed = parse_target(target, &cwd)?;
+    let mode = if update { UpdateMode::Always }
+               else if update_if_missing { UpdateMode::IfMissing }
+               else { UpdateMode::None };
+
+    // Mirror `dpe run`'s --cache parser. None = no CLI override, fall
+    // through to test.yaml `cache:` (or default Use).
+    let cli_cache: Option<CacheMode> = match cache {
+        None             => None,
+        Some("use")      => Some(CacheMode::Use),
+        Some("refresh")  => Some(CacheMode::Refresh),
+        Some("bypass")   => Some(CacheMode::Bypass),
+        Some("off")      => Some(CacheMode::Off),
+        Some(other)      => anyhow::bail!("unknown --cache mode: {} (use|refresh|bypass|off)", other),
+    };
+
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let report = rt.block_on(run_many(&parsed, cfg, mode, cli_cache))?;
+
+    if report.results.is_empty() {
+        eprintln!("WARN  no test cases matched target '{target}'");
+        eprintln!("      hint: scaffold cases under <pipeline>/tests/<variant>/<stage>/<case>/");
+        return Ok(());
+    }
+
+    // Per-case status line. Stable width for the status word so columns
+    // line up like vitest / jest do; following slot is variant/stage/case;
+    // duration in parens at the end.
+    for r in &report.results {
+        let id = format!("{}:{}:{}", r.case.variant, r.case.stage, r.case.case);
+        match &r.kind {
+            ResultKind::Pass            => println!("PASS    {id}  ({}ms)", r.duration_ms),
+            ResultKind::Updated{wrote}  => {
+                println!("UPDATED {id}  ({}ms)", r.duration_ms);
+                for p in wrote {
+                    println!("        wrote {}", p.display());
+                }
+            }
+            ResultKind::Skipped{reason} => println!("SKIP    {id}  ({})", reason_label(reason)),
+            ResultKind::Fail{diff}      => {
+                println!("FAIL    {id}  ({}ms)", r.duration_ms);
+                for line in diff.lines() { println!("    {line}"); }
+            }
+            ResultKind::Error{msg}      => {
+                println!("ERROR   {id}  ({}ms)", r.duration_ms);
+                for line in msg.lines() { println!("    {line}"); }
+            }
+        }
+    }
+
+    // Single-case mode: the per-case line above IS the user's whole
+    // signal — no need for a separate summary that just repeats "1 passed".
+    // For bulk runs (multi-case), summary is the headline.
+    if report.results.len() > 1 {
+        println!();
+        let mut bits = Vec::new();
+        if report.passed  > 0 { bits.push(format!("{} passed",  report.passed)); }
+        if report.failed  > 0 { bits.push(format!("{} failed",  report.failed)); }
+        if report.updated > 0 { bits.push(format!("{} updated", report.updated)); }
+        if report.skipped > 0 { bits.push(format!("{} skipped", report.skipped)); }
+        if report.errored > 0 { bits.push(format!("{} errored", report.errored)); }
+        let secs = report.total_ms as f64 / 1000.0;
+        println!("Summary: {}  in {:.2}s", bits.join(", "), secs);
+    }
+
+    let code = report.exit_code();
+    if code != 0 { std::process::exit(code); }
+    Ok(())
+}
+
+fn reason_label(r: &dpe::test_runner::SkipReason) -> String {
+    use dpe::test_runner::SkipReason;
+    match r {
+        SkipReason::SkipList(t)       => format!("skip-list: {t}"),
+        SkipReason::TestExclusive     => "test_exclusive".to_string(),
+        SkipReason::TestSkipped       => "test-skipped".to_string(),
+        SkipReason::StageNotInVariant => "stage not in variant".to_string(),
+    }
+}
+
+fn cmd_coverage(
+    target: &str,
+    emit_json: bool,
+    cfg: &dpe::RunnerConfig,
+) -> anyhow::Result<()> {
+    use dpe::test_runner::{coverage, parse_target};
+
+    let cwd = std::env::current_dir()?;
+
+    // Coverage only accepts <pipeline> or <pipeline>:<variant> — reject
+    // anything that includes a stage or case part.
+    let parts: Vec<&str> = target.splitn(3, ':').collect();
+    if parts.len() > 2 {
+        anyhow::bail!(
+            "coverage target accepts at most two parts (<pipeline>[:<variant>]); \
+             got '{target}'. To check one stage, use `dpe test`."
+        );
+    }
+
+    let parsed = parse_target(target, &cwd)?;
+    let variants = coverage(&parsed, cfg)?;
+
+    if emit_json {
+        println!("{}", serde_json::to_string_pretty(&format_coverage_json(&variants))?);
+    } else {
+        print!("{}", format_coverage_text(&variants));
+    }
+    Ok(())
+}
+
+/// Render the JSON form of a coverage run. Pure function: no I/O, no
+/// globals -- unit-testable.
+fn format_coverage_json(variants: &[dpe::test_runner::VariantCoverage]) -> serde_json::Value {
+    use dpe::test_runner::CoverageBucket;
+    let mut total_covered = 0usize;
+    let mut total_total   = 0usize;
+    let variants_json: Vec<serde_json::Value> = variants.iter().map(|vc| {
+        total_covered += vc.covered;
+        total_total   += vc.total;
+        let stages_json: Vec<serde_json::Value> = vc.stages.iter().map(|sc| {
+            let kind = match &sc.bucket {
+                CoverageBucket::Covered            => "covered",
+                CoverageBucket::SkipList { .. }    => "skip_list",
+                CoverageBucket::TestSkipped        => "test_skipped",
+                CoverageBucket::ExclusiveCovered   => "exclusive_covered",
+                CoverageBucket::ExclusiveUncovered => "exclusive_uncovered",
+                CoverageBucket::Uncovered          => "uncovered",
+            };
+            serde_json::json!({
+                "stage":      sc.stage,
+                "tool":       sc.tool,
+                "bucket":     kind,
+                "case_count": sc.case_count,
+            })
+        }).collect();
+        serde_json::json!({
+            "variant": vc.variant,
+            "stages":  stages_json,
+            "covered": vc.covered,
+            "total":   vc.total,
+            "pct":     format!("{:.1}", vc.pct),
+        })
+    }).collect();
+    let overall_pct = if total_total == 0 { 100.0f64 }
+                      else { 100.0 * total_covered as f64 / total_total as f64 };
+    serde_json::json!({
+        "variants": variants_json,
+        "covered":  total_covered,
+        "total":    total_total,
+        "pct":      format!("{:.1}", overall_pct),
+    })
+}
+
+/// Render the text form of a coverage run. Pure function: no I/O. The
+/// trailing newline policy mirrors the CLI's `print!` (i.e. caller is
+/// responsible for adding one if needed).
+fn format_coverage_text(variants: &[dpe::test_runner::VariantCoverage]) -> String {
+    use dpe::test_runner::CoverageBucket;
+    use std::fmt::Write;
+    let mut out = String::new();
+    let mut grand_covered = 0usize;
+    let mut grand_total   = 0usize;
+    let multi = variants.len() > 1;
+
+    for vc in variants {
+        if multi { let _ = writeln!(out, "variant: {}", vc.variant); }
+
+        let name_width = vc.stages.iter().map(|s| s.stage.len()).max().unwrap_or(0);
+
+        for sc in &vc.stages {
+            let sym  = sc.bucket.symbol();
+            let name = &sc.stage;
+            let pad  = name_width.saturating_sub(name.len());
+            let spaces = " ".repeat(pad);
+            let detail = match &sc.bucket {
+                CoverageBucket::Covered => {
+                    let noun = if sc.case_count == 1 { "case" } else { "cases" };
+                    format!("{} {noun}", sc.case_count)
+                }
+                CoverageBucket::SkipList { tool } => format!("(skip-list: {tool})"),
+                CoverageBucket::TestSkipped       => "(test-skipped)".to_string(),
+                CoverageBucket::ExclusiveCovered => {
+                    let noun = if sc.case_count == 1 { "case" } else { "cases" };
+                    format!("{} {noun}  (exclusive)", sc.case_count)
+                }
+                CoverageBucket::ExclusiveUncovered => "(exclusive, no tests)".to_string(),
+                CoverageBucket::Uncovered          => String::new(),
+            };
+            let prefix = if multi { "  " } else { "" };
+            if detail.is_empty() {
+                let _ = writeln!(out, "{prefix}{sym}  {name}{spaces}");
+            } else {
+                let _ = writeln!(out, "{prefix}{sym}  {name}{spaces}  {detail}");
+            }
+        }
+
+        let noun = if vc.covered == 1 { "stage" } else { "stages" };
+        let line = format!("{}/{} covered ({:.0}%)", vc.covered, vc.total, vc.pct);
+        if multi {
+            let _ = writeln!(out, "  {line}");
+            let _ = writeln!(out);
+        } else {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "{line} ({noun} with tests / testable stages)");
+        }
+
+        grand_covered += vc.covered;
+        grand_total   += vc.total;
+    }
+
+    if multi {
+        let grand_pct = if grand_total == 0 { 100.0f64 }
+                        else { 100.0 * grand_covered as f64 / grand_total as f64 };
+        let _ = writeln!(out, "Total: {grand_covered}/{grand_total} covered ({grand_pct:.0}%)");
+    }
+
+    out
 }
 
 fn cmd_init(name: &str, out: &std::path::Path) -> anyhow::Result<()> {
@@ -698,6 +1024,15 @@ fn cmd_run(
     // files land in completely wrong places. Loud reject + hint.
     reject_prefix_arg("--temp-dir", temp_dir.as_deref())?;
     reject_prefix_arg("--storage-dir", storage_dir.as_deref())?;
+
+    // Resolve all path args to absolute paths now, before they are stored
+    // in SessionContext or emitted as DPE_* env vars. Tools require absolute
+    // paths (e.g. scan-fs errors on a relative v.path); resolving here means
+    // `dpe run my:v -i relative/path` works identically to an absolute path.
+    let input = make_absolute(input);
+    let output = make_absolute(output);
+    let temp_dir = temp_dir.map(make_absolute);
+    let storage_dir = storage_dir.map(make_absolute);
 
     let (pipeline_path, variant_name) = parse_target(&target)?;
     let (pipeline_dir, pipeline_name) = resolve_pipeline_dir_and_name(&pipeline_path)?;
@@ -1312,7 +1647,7 @@ const BUILTINS: &[BuiltinEntry] = &[
         description: "Drop or divert envelopes that fail a boolean expression" },
     BuiltinEntry { name: "dedup",
         description: "Drop envelopes whose key has been seen before (persistent index)" },
-    BuiltinEntry { name: "group_by",
+    BuiltinEntry { name: "group-by",
         description: "Group envelopes by key and emit aggregates on trigger" },
     BuiltinEntry { name: "toggle",
         description: "Env-gated 1→1 passthrough; pass-all or drop-all per env match" },
@@ -1589,6 +1924,28 @@ fn reject_prefix_arg(flag: &str, value: Option<&std::path::Path>) -> anyhow::Res
     Ok(())
 }
 
+/// Resolve a CLI-supplied path to an absolute path by joining with the
+/// process CWD when it is relative. Absolute paths are returned as-is.
+///
+/// We deliberately do NOT call `std::fs::canonicalize` here because:
+///   1. The output dir may not exist yet (created by `create_dir_all` later).
+///   2. `canonicalize` adds a `\\?\` UNC prefix on Windows which confuses
+///      downstream tools and log consumers.
+///
+/// Plain join-with-CWD is the correct and sufficient transform.
+fn make_absolute(p: PathBuf) -> PathBuf {
+    if p.is_absolute() {
+        return p;
+    }
+    // CWD lookup failure means the process has no usable working directory --
+    // every downstream `fs::*` call would fail too. Bail loudly rather than
+    // silently fall back to "." (which produces a still-relative path,
+    // contradicting this function's contract).
+    let cwd = std::env::current_dir()
+        .expect("std::env::current_dir() failed -- process has no working directory");
+    cwd.join(p)
+}
+
 /// `std::fs::canonicalize` returns `\\?\…` UNC paths on Windows. The
 /// verbatim prefix is technically correct but ugly in JSON output and
 /// trips downstream consumers that don't expect it. Strip when present.
@@ -1737,11 +2094,81 @@ fn cmd_config_add_path(path: &std::path::Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_one, reject_prefix_arg, strip_unc_prefix, wrap_seed_line};
+    use super::{check_one, format_coverage_json, format_coverage_text, make_absolute, reject_prefix_arg, strip_unc_prefix, wrap_seed_line};
     use dpe::paths::PathResolver;
+    use dpe::test_runner::{CoverageBucket, StageCoverage, VariantCoverage};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn mk_variant(name: &str, stages: Vec<(&str, &str, CoverageBucket, usize)>) -> VariantCoverage {
+        let stages: Vec<StageCoverage> = stages.into_iter()
+            .map(|(stage, tool, bucket, cases)| StageCoverage {
+                stage: stage.to_string(),
+                tool: tool.to_string(),
+                bucket,
+                case_count: cases,
+            })
+            .collect();
+        let (covered, total) = stages.iter().fold((0, 0), |(c, t), s| {
+            let (dc, dt) = match s.bucket {
+                CoverageBucket::Covered | CoverageBucket::ExclusiveCovered => (1, 1),
+                CoverageBucket::ExclusiveUncovered | CoverageBucket::Uncovered => (0, 1),
+                CoverageBucket::SkipList { .. } | CoverageBucket::TestSkipped => (0, 0),
+            };
+            (c + dc, t + dt)
+        });
+        let pct = if total == 0 { 100.0 } else { 100.0 * covered as f64 / total as f64 };
+        VariantCoverage { variant: name.to_string(), stages, covered, total, pct }
+    }
+
+    #[test]
+    fn format_coverage_text_single_variant_renders_one_block() {
+        let variants = vec![mk_variant("main", vec![
+            ("a", "scan-fs",   CoverageBucket::Covered,          2),
+            ("b", "filter",    CoverageBucket::Uncovered,        0),
+            ("c", "checkpoint", CoverageBucket::SkipList { tool: "checkpoint".into() }, 0),
+        ])];
+        let txt = format_coverage_text(&variants);
+        assert!(txt.contains("a"), "stage a should appear: {txt}");
+        assert!(txt.contains("2 cases"), "covered count: {txt}");
+        assert!(txt.contains("skip-list: checkpoint"), "skip detail: {txt}");
+        // Single-variant block does NOT print "variant: <name>" header.
+        assert!(!txt.starts_with("variant:"), "single variant should not show header: {txt}");
+        assert!(txt.contains("1/2 covered (50%)"), "summary line: {txt}");
+    }
+
+    #[test]
+    fn format_coverage_text_multi_variant_prints_total() {
+        let variants = vec![
+            mk_variant("v1", vec![("a", "scan-fs", CoverageBucket::Covered, 1)]),
+            mk_variant("v2", vec![("a", "scan-fs", CoverageBucket::Uncovered, 0)]),
+        ];
+        let txt = format_coverage_text(&variants);
+        assert!(txt.contains("variant: v1"), "multi-variant header: {txt}");
+        assert!(txt.contains("variant: v2"), "multi-variant header: {txt}");
+        assert!(txt.contains("Total: 1/2 covered (50%)"), "grand total: {txt}");
+    }
+
+    #[test]
+    fn format_coverage_json_overall_pct_includes_all_variants() {
+        let variants = vec![
+            mk_variant("v1", vec![("a", "x", CoverageBucket::Covered, 1)]),
+            mk_variant("v2", vec![("b", "y", CoverageBucket::Uncovered, 0)]),
+        ];
+        let j = format_coverage_json(&variants);
+        assert_eq!(j["covered"], serde_json::json!(1));
+        assert_eq!(j["total"],   serde_json::json!(2));
+        assert_eq!(j["pct"],     serde_json::json!("50.0"));
+        assert_eq!(j["variants"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn format_coverage_json_empty_variants_pct_is_100() {
+        // Zero total means "no testable stages" -- show 100% rather than NaN.
+        let j = format_coverage_json(&[]);
+        assert_eq!(j["pct"], serde_json::json!("100.0"));
+    }
 
     fn empty_resolver() -> PathResolver {
         PathResolver::from_map(BTreeMap::new())
@@ -1951,6 +2378,40 @@ mod tests {
     fn reject_prefix_arg_no_op_when_unset() {
         // Most users don't pass --temp-dir at all; None is the common case.
         assert!(reject_prefix_arg("--temp-dir", None).is_ok());
+    }
+
+    #[test]
+    fn make_absolute_leaves_absolute_path_unchanged() {
+        let abs = if cfg!(windows) {
+            PathBuf::from(r"D:\data\input")
+        } else {
+            PathBuf::from("/data/input")
+        };
+        assert_eq!(make_absolute(abs.clone()), abs);
+    }
+
+    #[test]
+    fn make_absolute_resolves_relative_against_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let rel = PathBuf::from("relative/path");
+        let got = make_absolute(rel.clone());
+        assert!(got.is_absolute(), "result must be absolute: {:?}", got);
+        assert_eq!(got, cwd.join(rel));
+    }
+
+    #[test]
+    fn make_absolute_dot_becomes_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let got = make_absolute(PathBuf::from("."));
+        assert!(got.is_absolute(), "result must be absolute: {:?}", got);
+        assert_eq!(got, cwd.join("."));
+    }
+
+    #[test]
+    fn make_absolute_preserves_non_existent_relative() {
+        // Path need not exist -- used for --output which is created later.
+        let got = make_absolute(PathBuf::from("does/not/exist/yet"));
+        assert!(got.is_absolute(), "non-existent relative must still become absolute");
     }
 
     #[test]

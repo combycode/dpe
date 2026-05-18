@@ -1,6 +1,6 @@
 [package]
 name = "dpe"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
 description = "Data Processing Engine -- high-throughput streaming pipeline runner"
 license = "AGPL-3.0-or-later"
@@ -56,10 +56,21 @@ dirs = "6"
 thiserror = "2"
 anyhow = "1"
 
+# `.env` loader for `dpe --env-file <path>`. Active fork of the original
+# (unmaintained) `dotenv`; explicit-path API only — we never silently
+# load .env from CWD.
+dotenvy = "0.15"
+
 # Regex pattern matching for `dpe log --search --regex`. Already pulled
 # in transitively elsewhere; declared explicit here so the import path
 # stays stable. Version pinned to whatever's already in the lock.
 regex = "1.12"
+
+# `dpe test` runner — assert-script engine resolution (which::which),
+# fs-ignore globs, JSON Schema mode for per-file comparison.
+which       = "8"
+globset     = "0.4"
+jsonschema  = "0.46"
 
 # Cross-platform local sockets (named pipe on Windows, UDS on Unix).
 # NO TCP for runner<->CLI control; this is the only transport.

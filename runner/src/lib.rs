@@ -24,6 +24,7 @@ pub mod session_proxy;
 pub mod spawn;
 pub mod state;
 pub mod stderr;
+pub mod test_runner;
 pub mod tools;
 pub mod trace;
 pub mod types;

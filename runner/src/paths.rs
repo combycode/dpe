@@ -78,6 +78,98 @@ impl PathResolver {
         }
     }
 
+    /// Replace every occurrence of a known `$prefix` or `$prefix/subpath`
+    /// WITHIN a string — for expressions and route channel expressions where
+    /// path references appear inline (e.g. `v.path.startsWith("$input/data")`).
+    ///
+    /// Unlike [`resolve_string`] (which handles only strings whose ENTIRE
+    /// value starts with `$prefix`), this does substring replacement.
+    /// Unknown `$xxx` tokens pass through unchanged so Mongo operators and
+    /// other `$`-using syntax is safe.
+    pub fn resolve_in_string(&self, s: &str) -> String {
+        if self.prefixes.is_empty() || !s.contains('$') {
+            return s.to_string();
+        }
+
+        let bytes = s.as_bytes();
+        let mut out = String::with_capacity(s.len() + 64);
+        let mut i = 0;
+
+        while i < bytes.len() {
+            if bytes[i] != b'$' {
+                // Bulk-copy the run of non-`$` bytes in one shot. `$` is
+                // ASCII (0x24) so its byte never appears as a continuation
+                // byte of any multi-byte UTF-8 sequence -- searching at
+                // byte level can't land mid-codepoint, and the slice we
+                // take is guaranteed to start and end on a char boundary.
+                let next = bytes[i..].iter().position(|&b| b == b'$')
+                    .map(|off| i + off)
+                    .unwrap_or(bytes.len());
+                out.push_str(&s[i..next]);
+                i = next;
+                continue;
+            }
+
+            // Found '$'. Extract the prefix name: [a-z][a-z0-9-]*
+            let name_start = i + 1;
+            let mut name_end = name_start;
+            while name_end < bytes.len()
+                && (bytes[name_end].is_ascii_lowercase()
+                    || bytes[name_end].is_ascii_digit()
+                    || bytes[name_end] == b'-')
+            {
+                name_end += 1;
+            }
+
+            if name_start == name_end {
+                // Bare '$' with no token following — pass through.
+                out.push('$');
+                i += 1;
+                continue;
+            }
+
+            let name = &s[name_start..name_end];
+
+            if let Some(base) = self.prefixes.get(name) {
+                if name_end < bytes.len() && bytes[name_end] == b'/' {
+                    // Collect subpath: valid path-component chars after '/'
+                    let subpath_start = name_end + 1;
+                    let mut subpath_end = subpath_start;
+                    while subpath_end < bytes.len() {
+                        let b = bytes[subpath_end];
+                        if b.is_ascii_alphanumeric()
+                            || b == b'/'
+                            || b == b'-'
+                            || b == b'_'
+                            || b == b'.'
+                        {
+                            subpath_end += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    let subpath = &s[subpath_start..subpath_end];
+                    if subpath.is_empty() {
+                        out.push_str(&path_to_string(base));
+                        out.push('/');
+                    } else {
+                        out.push_str(&path_to_string(&base.join(subpath)));
+                    }
+                    i = subpath_end;
+                } else {
+                    out.push_str(&path_to_string(base));
+                    i = name_end;
+                }
+            } else {
+                // Unknown prefix — pass through (Mongo operators, JS vars, etc.)
+                out.push('$');
+                i += 1;
+            }
+        }
+
+        out
+    }
+
     /// Walk a JSON value and replace every string that begins with `$prefix`.
     /// Leaves all other values unchanged. Returns a NEW Value (pure).
     pub fn resolve_in_value(&self, v: &Value) -> Result<Value, PathError> {
@@ -236,6 +328,54 @@ mod tests {
         assert_eq!(r["b"], true);
         assert_eq!(r["nil"], Value::Null);
         assert_eq!(r["s"], "/abs/input");
+    }
+
+    // ─── resolve_in_string (substring replacement) ────────────────────
+
+    #[test] fn resolve_in_string_bare_prefix_inside_expression() {
+        // $input appears mid-string inside an expression
+        let r = resolver();
+        assert_eq!(
+            r.resolve_in_string(r#"v.path.startsWith("$input")"#),
+            r#"v.path.startsWith("/abs/input")"#,
+        );
+    }
+
+    #[test] fn resolve_in_string_prefix_with_subpath_inline() {
+        let r = resolver();
+        assert_eq!(
+            r.resolve_in_string(r#"includes(v.file, "$input/data")"#),
+            r#"includes(v.file, "/abs/input/data")"#,
+        );
+    }
+
+    #[test] fn resolve_in_string_multiple_tokens_in_one_expression() {
+        let r = resolver();
+        let out = r.resolve_in_string("v.a == \"$input/a\" || v.b == \"$output/b\"");
+        assert_eq!(out, "v.a == \"/abs/input/a\" || v.b == \"/abs/output/b\"");
+    }
+
+    #[test] fn resolve_in_string_unknown_token_passes_through() {
+        // $set, $v, unknown — must not be replaced
+        let r = resolver();
+        assert_eq!(r.resolve_in_string("$set.field"), "$set.field");
+        assert_eq!(r.resolve_in_string("$bogus/x"), "$bogus/x");
+    }
+
+    #[test] fn resolve_in_string_no_dollar_unchanged() {
+        let r = resolver();
+        assert_eq!(r.resolve_in_string("v.x > 42"), "v.x > 42");
+    }
+
+    #[test] fn resolve_in_string_trailing_slash_preserved() {
+        let r = resolver();
+        let out = r.resolve_in_string("$input/");
+        assert_eq!(out, "/abs/input/");
+    }
+
+    #[test] fn resolve_in_string_empty_prefixes_passthrough() {
+        let r = PathResolver::default(); // no prefixes
+        assert_eq!(r.resolve_in_string("$input/foo"), "$input/foo");
     }
 
     #[test] fn windows_backslash_normalised_to_forward() {

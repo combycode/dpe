@@ -31,6 +31,17 @@ pub enum EnvInterpError {
 /// without poisoning `std::env` (which is process-global and racy).
 pub trait EnvLookup {
     fn get(&self, name: &str) -> Option<String>;
+
+    /// Whether this lookup is "strict" — i.e. it represents real runtime
+    /// env values. Strict mode enables expression compilation checks during
+    /// `dpe check` (since concrete values produce concrete expressions).
+    ///
+    /// `AllowUndefinedEnv` returns `false`: it substitutes empty strings for
+    /// unset vars, which can leave comparison operators without a right-hand
+    /// side (`v.x == ` is not valid). Skipping compilation in lenient mode is
+    /// the correct trade-off — the expression will be validated at `dpe run`
+    /// time with real values.
+    fn is_strict(&self) -> bool { true }
 }
 
 /// Reads from the real process environment via `std::env::var`.
@@ -57,11 +68,16 @@ impl EnvLookup for MapEnv {
 /// substitution, downstream parsers (filter expr, settings JSON) see
 /// only valid strings, and the user can still inspect the resulting
 /// plan in the editor.
+///
+/// `is_strict()` returns `false` — expression compilation is skipped in
+/// this mode because empty substitutions can produce syntactically invalid
+/// expressions (e.g. `v.x == ${BATCH}` → `v.x == ` with no RHS).
 pub struct AllowUndefinedEnv;
 impl EnvLookup for AllowUndefinedEnv {
     fn get(&self, name: &str) -> Option<String> {
         Some(std::env::var(name).unwrap_or_default())
     }
+    fn is_strict(&self) -> bool { false }
 }
 
 /// Walk a JSON value and substitute `${VAR}` / `${VAR:-default}` in
