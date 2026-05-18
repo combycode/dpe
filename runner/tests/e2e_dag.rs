@@ -426,6 +426,124 @@ stages:
     assert_eq!(upper, 2);
 }
 
+// ─── fan-in: two route channels merge into one Single consumer ────────
+//
+// Regression for the historic `stdin already taken` failure: each
+// `route.channel` ref used to claim the consumer's input slot in-loop,
+// so the SECOND route ref would error before any data flowed. The fix
+// in `wire_stage_input` routes each per-channel writer through its own
+// duplex bridge and fans the bridges in via `deliver_readers_to_consumer`
+// so the consumer's stdin is claimed exactly once.
+
+#[tokio::test]
+async fn dag_fan_in_from_two_route_channels_into_one_consumer() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  router:
+    tool: route
+    routes:
+      a: "v.kind == 'a'"
+      b: "v.kind == 'b'"
+    input: src
+  merge:
+    tool: mock-tool
+    settings: { tag: merge }
+    input: [router.a, router.b]
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let input = br#"{"t":"d","id":"1","src":"s","v":{"kind":"a","n":1}}
+{"t":"d","id":"2","src":"s","v":{"kind":"b","n":2}}
+{"t":"d","id":"3","src":"s","v":{"kind":"a","n":3}}
+{"t":"d","id":"4","src":"s","v":{"kind":"b","n":4}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let out = report.terminal_output.get("merge").expect("merge terminal output");
+    let lines = parse_lines(out);
+    assert_eq!(lines.len(), 4, "all four envelopes reach merge via the two route channels");
+
+    let mut ns: Vec<i64> = lines.iter().filter_map(|l| l["v"]["n"].as_i64()).collect();
+    ns.sort();
+    assert_eq!(ns, vec![1, 2, 3, 4]);
+}
+
+// ─── fan-in: route.channel + plain ref merge into one Single consumer ─
+//
+// Second leg of the same fix. Previously, a mix of `route.channel` and
+// plain stage refs in one `input:` block would take the consumer's
+// stdin twice (once in the route-loop, once in the final delivery).
+#[tokio::test]
+async fn dag_fan_in_from_route_channel_and_plain_ref_into_one_consumer() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  router:
+    tool: route
+    routes:
+      keep:    "v.k == 'keep'"
+      discard: "v.k == 'drop'"
+    input: src
+  discard-sink:
+    tool: mock-tool
+    settings: { tag: discard }
+    input: router.discard
+  side:
+    tool: mock-tool
+    settings: { tag: side }
+    input: $input
+  merge:
+    tool: mock-tool
+    settings: { tag: merge }
+    input: [router.keep, side]
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    // Both `src` and `side` are leaves at `$input`, so each envelope is
+    // emitted by both. The router admits only `k == 'keep'` from src;
+    // `side` admits everything. So `merge` sees (kept-from-src) + (all-from-side).
+    let input = br#"{"t":"d","id":"1","src":"s","v":{"k":"keep","n":1}}
+{"t":"d","id":"2","src":"s","v":{"k":"drop","n":2}}
+{"t":"d","id":"3","src":"s","v":{"k":"keep","n":3}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let out = report.terminal_output.get("merge").expect("merge terminal output");
+    let lines = parse_lines(out);
+    // route.keep delivers 2 (n=1, n=3); side delivers all 3 (n=1, n=2, n=3) → 5.
+    assert_eq!(lines.len(), 5,
+        "two from route.keep + three from plain `side` = 5 envelopes reach merge");
+
+    let mut ns: Vec<i64> = lines.iter().filter_map(|l| l["v"]["n"].as_i64()).collect();
+    ns.sort();
+    assert_eq!(ns, vec![1, 1, 2, 3, 3]);
+}
+
 // ─── directory output sink writes NDJSON files ────────────────────────
 
 #[tokio::test]

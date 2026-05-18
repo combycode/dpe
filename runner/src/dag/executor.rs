@@ -343,7 +343,7 @@ fn spawn_stage_handle_from_planned(
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("resolve: {}", e) })?;
             debug_assert!(matches!(tool.invocation, Invocation::Binary { .. } | Invocation::Command { .. }));
             let single = spawn(&tool, &planned.resolved_settings, session, name, 0,
-                planned.stage_def.cache)
+                planned.stage_def.cache, None)
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("spawn: {}", e) })?;
             Ok(StageHandle::Single(Box::new(single)))
         }
@@ -387,36 +387,74 @@ fn wire_stage_input(
         return Ok(());
     }
 
-    // Per upstream ref, extract a BuiltinReader that yields its bytes.
-    // Route channels are handled inline — the route is given a writer that
-    // lands data into this consumer rather than producing a reader here.
+    // Validate no $input mixed with other refs before we start mutating state.
+    if refs.iter().any(|r| r == "$input") {
+        return Err(DagError::Stage {
+            stage: name.into(),
+            reason: "cannot mix $input with other inputs in a single stage".into(),
+        });
+    }
+
+    // Split refs into route-channel refs (push-style: route writes downstream)
+    // and plain refs (pull-style: we copy from upstream's reader).
+    let mut route_refs: Vec<(String, String)> = Vec::new();
+    let mut plain_refs: Vec<String> = Vec::new();
+    for r in refs {
+        match r.split_once('.') {
+            Some((up, ch)) => route_refs.push((up.into(), ch.into())),
+            None           => plain_refs.push(r),
+        }
+    }
+
+    // Fast path: exactly one source, and it's a route channel. Hand the
+    // consumer's writer directly to the route — no extra duplex bridge.
+    // (Equivalent to the legacy behaviour for the common 1-route-channel
+    // case; preserves zero-copy direct-pipe semantics for Single consumers.)
+    if route_refs.len() == 1 && plain_refs.is_empty() {
+        let (upstream_name, channel) = &route_refs[0];
+        let writer = take_consumer_writer(handles, name, tasks, duplex_buf)?;
+        return match handles.get_mut(upstream_name) {
+            Some(StageHandle::Route(route)) => {
+                route.channel_writers.insert(channel.clone(), writer);
+                Ok(())
+            }
+            _ => Err(DagError::Stage {
+                stage: name.into(),
+                reason: format!("upstream '{}' is not a route stage", upstream_name),
+            }),
+        };
+    }
+
+    // General path: build a per-route duplex bridge for each route-channel
+    // ref (route writes to dw, we own dr); collect dr's alongside plain
+    // upstream readers; let deliver_readers_to_consumer fan them all in
+    // and pipe the merged stream to the consumer's input ONCE. This is the
+    // structural fix for the historic "stdin already taken" failure that
+    // surfaced whenever a Single consumer had >1 route channels or mixed
+    // route + plain inputs: stdin (or any other "input slot") was being
+    // claimed in-loop per route ref AND again by the final fan-in delivery.
     let mut readers: Vec<BuiltinReader> = Vec::new();
 
-    for r in refs {
-        if r == "$input" {
-            return Err(DagError::Stage {
-                stage: name.into(),
-                reason: "cannot mix $input with other inputs in a single stage".into(),
-            });
-        }
-        if let Some((upstream_name, channel)) = r.split_once('.') {
-            let writer = take_consumer_writer(handles, name, tasks, duplex_buf)?;
-            match handles.get_mut(upstream_name) {
-                Some(StageHandle::Route(route)) => {
-                    route.channel_writers.insert(channel.into(), writer);
-                }
-                _ => return Err(DagError::Stage {
-                    stage: name.into(),
-                    reason: format!("upstream '{}' is not a route stage", upstream_name),
-                }),
+    for (upstream_name, channel) in route_refs {
+        let (dw, dr) = tokio::io::duplex(duplex_buf);
+        match handles.get_mut(&upstream_name) {
+            Some(StageHandle::Route(route)) => {
+                route.channel_writers.insert(channel, Box::new(dw));
             }
-            continue;
+            _ => return Err(DagError::Stage {
+                stage: name.into(),
+                reason: format!("upstream '{}' is not a route stage", upstream_name),
+            }),
         }
+        readers.push(Box::new(dr));
+    }
+
+    for r in plain_refs {
         let reader = take_upstream_reader(handles, &r, tasks, duplex_buf)?;
         readers.push(reader);
     }
 
-    if readers.is_empty() { return Ok(()); }
+    debug_assert!(!readers.is_empty(), "non-$input refs must yield at least one source");
     deliver_readers_to_consumer(handles, name, readers, tasks, duplex_buf)
 }
 
