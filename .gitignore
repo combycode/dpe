@@ -39,6 +39,19 @@ test-pipeline/standard/tools/*/*.exe
 test-pipeline/standard/tools/*/*.so
 test-pipeline/standard/tools/*/*.dylib
 
+# Per-tool scratch dirs — created when running tools manually with the
+# literal `$temp` token in settings. Contents are ephemeral run output;
+# never commit. (Real pipeline runs resolve `$temp` to an OS temp dir.)
+tools/*/\$temp/
+tools/*/\$storage/
+tools/*/\$cache/
+
+# Test-runner ephemeral output — `dpe test` writes per-case actuals under
+# <case>/.run/actual/ on every run; only the case's input/, expected/,
+# and test.yaml are checked in. The .run/ tree (actual + temp + storage
+# + session) is regenerated and selectively wiped between phases.
+**/.run/
+
 # Logs / temp
 *.log
 *.tmp
