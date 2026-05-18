@@ -8,7 +8,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
-## [2.0.1] — 2026-05-05
+## [2.0.2] — 2026-05-19
+
+Feature release — adds a per-stage snapshot test runner (`dpe test` / `dpe coverage`), a `$path` resolver across all three SDKs, and broader observability + ergonomics improvements around stages, settings, and tools. No breaking changes to existing pipelines.
+
+### Added
+
+- **`dpe test`** — per-stage snapshot test runner. Spawns ONE stage in isolation (no DAG), pipes `tests/<variant>/<stage>/<case>/input/seed.ndjson` to its stdin, captures every output channel (`data` / `meta` / `errors` / `logs` / `trace` / `stats`), diffs against committed `expected/` after canonicalising (strip envelope `id` + `src`, sort JSON keys). Target syntax: `[<pipeline>:]<variant>:<stage>[:<case>]`. Bulk runs (`<variant>:<stage>` without a case) execute every `case-*` under the stage. Flags: `--update` (rewrite expected from actual), `--update-if-missing` (write only when expected doesn't exist), `--cache <use|refresh|bypass|off>` (override per-case `cache:` in `test.yaml`). Exit 0 = PASS, 1 = FAIL, 2 = invocation error.
+- **`dpe test` declarative compare engine** — `test.yaml` `compare:` block controls how the diff runs. Per-channel and global matchers across seven kinds (`literal`, `glob`, `regex`, `prefix`, `suffix`, `contains`, `not_contains`) with token expansion (`$session`, `$cache_hash`, etc.); strict-channel asymmetry — silent leak detection on data/meta/errors, opt-in for logs/trace/stats; fs-tree compare across six file modes (`schema`, `fuzzy`, `contains`, `exists`, `bytes-equal`, `text-equal`); assert scripts (`python` / `bun` / `node`) resolved via `which::which`, invoked with 16 `DPE_*` env vars + exit-code protocol. Empty / missing `compare:` falls through to defaults + auto-detects which channels were produced. `--update` is scoped to data/meta/errors unless `compare.channels` opts in further.
+- **`dpe test` multi-phase orchestration** — a single `test.yaml` may declare multiple phases that share a `.run/` state directory. Only `actual/` is wiped between phases; `output/`, `temp/`, `storage/`, `session/` persist. Enables cache-flow tests, batch-resume tests, idempotency tests. Phase composition rules in `docs/testing.md`.
+- **`dpe test` builtin driver** — in-process testing for `filter`, `route`, `group_by`, `dedup` against seed input. Captures channel files via a synthetic writer. `spread` / `toggle` are marked `test_skipped: true` in synthetic builtin meta. `route` output is combined into a single annotated `data.ndjson` with a `_route_channel` field per envelope so cases can assert routing decisions.
+- **`dpe coverage`** — per-variant × stage matrix of snapshot-test coverage. Five buckets: `covered`, `skip_list`, `test_skipped`, `exclusive_covered`, `exclusive_uncovered`, `uncovered`. `--json` mode for tooling consumption. Lets pipeline authors see at a glance which stages are still untested.
+- **`dpe run --env-file <PATH>`** (global flag, applies to every subcommand) — load env vars from `.env`-style files before running. Repeatable; FIRST occurrence of a key wins; existing process env always overrides (CI secrets stay authoritative). The path must exist — no silent CWD pickup. Loaded once at startup.
+- **`$paths` resolver framework module** — new `paths` namespace exposed in the Rust, TypeScript, and Python SDKs (`combycode_dpe::paths`, `@combycode/dpe-framework-ts/paths`, `dpe.paths`). Tools can resolve the same `$pipeline` / `$session` / `$temp` / `$storage` / `$cache` / `$input` / `$output` / `$configs` tokens the runner uses, with parity across all three languages. Replaces hand-rolled per-tool env-var parsing.
+- **`scan-fs` `passthrough_input`** — when true, every field on the input envelope's `v` is copied onto every emitted entry. Reserved keys (scan-fs's own fields: `path` in full mode; canonical record fields `kind`/`root`/`directory`/`filename`/`ext`/`size`/`created`/`changed`/`hash` in diff mode) take precedence. Attach upstream tags (e.g. `category`, `batch_tag`) without a downstream `normalize` step.
+- **`scan-fs` `min_size` / `max_size`** — skip files outside a byte-size range. `null` for either disables the bound. Dirs unaffected.
+- **`read-file-stream` `passthrough_input`** — same semantics as scan-fs: copy input envelope's `v` fields onto every emitted row envelope. Reserved tool fields (`file`, `row_idx`, `row`) always win. Caller's top-level values take precedence over same-named fields inside `row.v` (which remain nested in `v.row`). Carry classification / metadata from upstream tools (`read-tables`, `classify`) onto every row without a separate normalize merge.
+- **`docs/testing.md`** — comprehensive guide to the snapshot test runner: layout, channel classification, full `test.yaml` schema, the four-step compare engine (channel shape → fs tree → per-channel envelope diff → assert script), multi-phase composition, authoring workflow, skip-list semantics.
+
+### Changed
+
+- **`scan-fs` default `hash`** changed from `"none"` to `"xxhash"`. Most pipelines hash for downstream identity anyway; the default now matches the common case. Pipelines that explicitly want no hash can still set `hash: "none"`.
+- **`read-file-stream` `csv_delim` validation** — now rejects multi-byte UTF-8 delimiters at startup with a clear error. Previously the code silently took the first byte and discarded the rest, producing a delimiter that matched nothing the user wrote.
+- **runner: error-on-error propagation** — stages that fail with `ctx.error(...)` now surface their input record + stage name to the journal more consistently. Internal cleanup in `runner/src/dag/plan.rs` and `runner/src/main.rs`.
+
+### Fixed
+
+- **runner: multi-source fan-in into a single consumer no longer fails with `stdin already taken`.** Refactored `wire_stage_input` so an `input:` list mixing route-channel refs (`router.foo`) with plain stage refs, or containing multiple route-channel refs, builds one merged duplex bridge per consumer and claims the consumer's stdin exactly once. The historic failure mode affected any tool whose `input:` block had more than one route-channel ref or mixed route + plain refs. Pure-plain multi-input fan-in (`input: [a, b]`) was already supported; this fix extends it to all source-kind combinations. Two new regression tests in `runner/tests/e2e_dag.rs` cover the previously-broken shapes.
+- **runner: env-interp + `$path` substitution** — `runner/src/env_interp.rs` and `runner/src/paths.rs` cleanups. `$session` / `$temp` paths now resolve consistently between runner and SDKs via the shared `paths` module.
+- **runner: token boundary handling in NDJSON envelopes** — new `runner/tests/token_boundary.rs` proves the runner correctly handles split-line / partial-token edge cases.
+- **runner: validation diagnostics** — `runner/src/validate/resolve.rs` improvements surface clearer messages for unresolved settings refs and missing tools.
+- **`normalize` tool: `${...}` rejection bytes assertion** — internal test fixture cleanup; no user-visible behaviour change.
+
+
 
 Patch release — bug fixes and small CLI ergonomics around the v2.0.0 surface.
 No breaking changes; existing pipelines and config files work unchanged.
@@ -46,7 +78,7 @@ No breaking changes; existing pipelines and config files work unchanged.
 - **`dpe --version`** + **`dpe-dev --version`** now report the binary version. v2.0.0 shipped without `#[command(version)]`; this restores the standard clap-derive flag and resolves the stale `2.0.0-rc1` string in dpe-dev.
 - **`route`** stage's `routes` was a `BTreeMap` and alphabetized YAML declaration order, breaking the documented "first-truthy-channel-wins, in declaration order" semantics. Swapped to `IndexMap`. Regression test added.
 - **dpe-base / dpe-dev Docker images** baked `DPE_STORAGE`/`DPE_TEMP`/`DPE_INPUT`/`DPE_OUTPUT` into the image's `ENV` layer pointing at `/workspace/{...}` — overlay-only paths that vanished on `--rm`. Removed the `ENV` block; the runtime `SessionContext` is the sole source of truth.
-- **Expression DSL** string literals now preserve UTF-8 multi-byte characters. The lexer previously read the source byte-by-byte and cast each byte to `char`, mangling Cyrillic / emoji / other non-ASCII content into mojibake. `includes(lower(v.x), 'оплат')` and similar predicates with non-ASCII literals now match correctly.
+- **Expression DSL** string literals now preserve UTF-8 multi-byte characters. The lexer previously read the source byte-by-byte and cast each byte to `char`, mangling Cyrillic / emoji / other non-ASCII content into mojibake. `includes(lower(v.x), 'файло')` and similar predicates with non-ASCII literals now match correctly.
 - **Multi-input fan-in** (`input: [a, b, c]` to a non-builtin tool) no longer deadlocks when upstream branches have different throughputs. The previous implementation drained readers sequentially with `read_to_end`, so a slow source became a barrier the fast sources sat behind. Replaced with the same interleaved-drain pattern used by replicas fan-in (one tokio task per reader, mpsc channel, write loop forwards each line as it arrives).
 - **Filter / route expression validation** with env-var references (`${VAR}`) is now performed AFTER env interpolation on both the validate path and the plan-compile path. Previously the plan-time pass interpolated and the validate pass did not, so `dpe check` failed on legal expressions like `includes(v.x, '${YEAR}')` while `dpe run` succeeded.
 
