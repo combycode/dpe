@@ -1,0 +1,22 @@
+pipeline: standard
+variant: 05-filter
+# Exercises the builtin `filter`. Seed envelopes have v.keep=true|false;
+# only the keepers reach the sink. Demonstrates the `dpe test` builtin
+# driver — `dpe test standard:05-filter:keep` runs the filter stage in
+# isolation and diffs against expected/data.ndjson.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  keep:
+    tool: filter
+    expression: "v.keep == true"
+    on_false: drop
+    input: read
+
+  sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/kept.ndjson", format: ndjson }
+    input: keep

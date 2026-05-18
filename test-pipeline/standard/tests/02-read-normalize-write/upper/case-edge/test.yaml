@@ -1,0 +1,4 @@
+# Edge cases for the `upper` stage:
+#   - empty string  → stays empty
+#   - already upper → unchanged
+#   - mixed case    → uppercased (numbers + dashes preserved)

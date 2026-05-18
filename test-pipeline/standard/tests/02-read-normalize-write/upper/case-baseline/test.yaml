@@ -1,0 +1,5 @@
+# Baseline test for the `upper` stage of variant 02-read-normalize-write.
+#
+# Empty body = inherit defaults. Auto-detect declares `data` channel
+# from the presence of `expected/data.ndjson`. Framework-noise channels
+# (logs/trace/stats) are ignored unless explicitly declared.

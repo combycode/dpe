@@ -1,0 +1,4 @@
+# Smoke test on a control-layer stage: the SKIP_TOOLS list contains
+# `gate`, so bulk runs MUST silently skip this case (with reason
+# "skip-list: gate"). Explicit per-stage runs (3- or 4-part target)
+# bypass the filter and would actually try to run the stage.

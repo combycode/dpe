@@ -1,0 +1,4 @@
+{"t":"d","id":"a","src":"-","v":{"keep":true,"name":"alice"}}
+{"t":"d","id":"b","src":"-","v":{"keep":false,"name":"bob"}}
+{"t":"d","id":"c","src":"-","v":{"keep":true,"name":"carol"}}
+{"t":"d","id":"d","src":"-","v":{"keep":false,"name":"dan"}}
