@@ -99,6 +99,14 @@ pub struct Stage {
     pub dedup: Option<DedupCfg>,
     #[serde(default)]
     pub group_by: Option<GroupByCfg>,
+    /// Env vars this stage requires at runtime. Runner validates they are
+    /// set at plan-compile time (strict ProcessEnv) or skips the check in
+    /// editor mode (AllowUndefinedEnv). Declaration improves discoverability:
+    /// `dpe check` lists missing vars so the user knows what to export before
+    /// running. Does NOT affect how the vars are passed to the tool process —
+    /// the tool reads them from its own environment via normal os::env access.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
 }
 
 /// Settings block for the built-in `dedup` stage.

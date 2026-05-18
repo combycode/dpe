@@ -10,6 +10,7 @@
 //! This module is LAUNCH-only. Orchestration (wiring, readiness, lifecycle)
 //! lives in `runtime.rs`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -55,6 +56,10 @@ pub struct SpawnedStage {
 /// variant. When `Some`, it overrides the session-level cache mode in
 /// the spawned tool's `DPE_CACHE_MODE` env var. `None` ⇒ inherit
 /// session mode (set by the `--cache` CLI flag).
+///
+/// `extra_env` is injected into the child's environment AFTER the
+/// standard DPE_* vars. Use `None` in production; the test runner uses
+/// this to inject `test.yaml` `env:` overrides per the test spec.
 pub fn spawn(
     tool: &ResolvedTool,
     settings: &Value,
@@ -62,6 +67,7 @@ pub fn spawn(
     stage_id: &str,
     instance_idx: u32,
     stage_cache_override: Option<crate::types::CacheMode>,
+    extra_env: Option<&BTreeMap<String, String>>,
 ) -> Result<SpawnedStage, SpawnError> {
     let invocation = match &tool.invocation {
         Invocation::Builtin(_) => return Err(SpawnError::IsBuiltin(tool.meta.name.clone())),
@@ -80,6 +86,11 @@ pub fn spawn(
     // the runner process (PATH is essential; HOME + USERPROFILE for python/bun).
     for (k, v) in session.env_for_stage(stage_id, instance_idx, stage_cache_override) {
         cmd.env(k, v);
+    }
+    if let Some(extra) = extra_env {
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
     }
     inherit_if_set(&mut cmd, "PATH");
     inherit_if_set(&mut cmd, "HOME");
@@ -168,6 +179,16 @@ fn build_command(
             let python = std::env::var("DPE_PYTHON").unwrap_or_else(|_| "python".into());
             let mut c = Command::new(&python);
             c.arg("-u").arg(&program);
+            // Force UTF-8 stdio. Python defaults to the platform code page
+            // (cp1252 on Windows when stdout is redirected), which corrupts
+            // any non-ASCII char in `json.dumps(..., ensure_ascii=False)`
+            // output — the DPE wire format requires UTF-8 NDJSON, and
+            // BufReader::read_line in builtin consumers rejects non-UTF-8
+            // bytes with InvalidData. PYTHONUTF8 (PEP 540) covers stdio +
+            // filesystem; PYTHONIOENCODING is a belt-and-suspenders pin
+            // for older interpreters that ignore PYTHONUTF8.
+            c.env("PYTHONUTF8", "1");
+            c.env("PYTHONIOENCODING", "utf-8");
             c
         }
         (ToolRuntime::Bun, Invocation::Binary { .. }) => {
@@ -245,6 +266,8 @@ mod tests {
                 name: "route".into(), version: None, description: None,
                 runtime: ToolRuntime::Rust, entry: None, run: None,
                 build: None, test: None, settings_schema: None, spec: None,
+                test_exclusive: false, test_skipped: false,
+                test_skipped_reason: None, extra: Default::default(),
             },
             dir: PathBuf::new(),
             invocation: Invocation::Builtin(BuiltinKind::Route),
@@ -254,7 +277,7 @@ mod tests {
     #[test]
     fn spawning_builtin_rejects() {
         let s = serde_json::json!({});
-        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0, None).unwrap_err();
+        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0, None, None).unwrap_err();
         assert!(matches!(err, SpawnError::IsBuiltin(_)));
     }
 

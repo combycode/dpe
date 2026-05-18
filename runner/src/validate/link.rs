@@ -109,6 +109,7 @@ mod tests {
             trace: true, cache: Some(CacheMode::Use),
             on_error: OnError::Drop,
             routes: None, expression: None, on_false: None, dedup: None, group_by: None,
+            env: None,
         }
     }
     fn stg_route(channels: &[(&str, &str)]) -> Stage {

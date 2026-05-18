@@ -439,36 +439,36 @@ mod tests {
     // eval level — the user's actual filter shape.
 
     #[test] fn fn_includes_cyrillic_self_match() {
-        // includes('оплаты', 'оплат') must be true. Pre-fix returned
+        // includes('файлов', 'файло') must be true. Pre-fix returned
         // false because both literals were mojibake but with different
         // byte counts (the haystack happened to contain extra bytes
         // from the trailing 'ы' that the needle didn't have).
-        assert!(b("includes('оплаты', 'оплат')"));
+        assert!(b("includes('файлов', 'файло')"));
     }
 
     #[test] fn fn_includes_cyrillic_with_lower() {
         // The user's expression uses `lower(haystack)` defensively;
         // for already-lowercase Cyrillic this is a no-op but the
         // pipeline must still match.
-        assert!(b("includes(lower('оплаты APP4U'), 'оплат')"));
+        assert!(b("includes(lower('файлов vendor-x'), 'файло')"));
     }
 
     #[test] fn fn_includes_cyrillic_negative_no_match() {
-        // Sheet name without 'оплат' must NOT match.
-        assert!(!b("includes('Day Log', 'оплат')"));
+        // Sheet name without 'файло' must NOT match.
+        assert!(!b("includes('Day Log', 'файло')"));
     }
 
     #[test] fn fn_includes_cyrillic_uppercase_via_lower() {
         // Uppercase Cyrillic haystack + lower() → lowercased correctly,
         // matches lowercase needle. Validates Rust's UTF-8-aware
         // to_lowercase() works end-to-end through the lexer fix.
-        assert!(b("includes(lower('ОПЛАТЫ APP4U'), 'оплат')"));
+        assert!(b("includes(lower('ФАЙЛОВ vendor-x'), 'файло')"));
     }
 
     #[test] fn fn_eq_cyrillic_exact_match() {
         // Exact equality on Cyrillic literal — the simplest possible
         // path through lexer+eval.
-        let expr = compile("'оплаты APP4U' == 'оплаты APP4U'").unwrap();
+        let expr = compile("'файлов vendor-x' == 'файлов vendor-x'").unwrap();
         assert_eq!(evaluate(&expr, &scope()).unwrap(), json!(true));
     }
 
@@ -524,7 +524,7 @@ mod tests {
 
     // ─── normalize helper (unit) ───────────────────────────────────────
     #[test] fn normalize_lowercases() { assert_eq!(normalize("HELLO"), "hello"); }
-    #[test] fn normalize_strips_ltd() { assert_eq!(normalize("ACME LTD"), "acme"); }
+    #[test] fn normalize_strips_ltd() { assert_eq!(normalize("ALPHA LTD"), "alpha"); }
     #[test] fn normalize_strips_punct_collapse_ws() {
         assert_eq!(normalize("a.b-c  d!!!"), "a b c d");
     }

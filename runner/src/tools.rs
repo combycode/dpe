@@ -24,7 +24,6 @@ pub enum ToolRuntime {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ToolMeta {
     pub name: String,
     #[serde(default)]
@@ -52,6 +51,63 @@ pub struct ToolMeta {
     /// doc-converter, llm, etc.).
     #[serde(default)]
     pub spec: Option<String>,
+    /// Tools that need external setup (database, uncached HTTP, hand-
+    /// loaded fixtures, …) set this to `true` so `dpe test` skips them
+    /// in bulk runs (`dpe test <pipeline>` / `<pipeline>:<variant>`).
+    /// Explicit per-stage runs (`dpe test <pipeline>:<variant>:<stage>`
+    /// or `:<case>`) always run — the user has asked for that case and
+    /// owns whatever environment setup is required. Default `false` =
+    /// bulk-testable. Stages with `test_exclusive: true` and no test
+    /// still count against coverage % so the tool gets a written test
+    /// (just one not bulk-runnable). The runner itself does NOT consume
+    /// this field — it's read only by `dpe test`'s bulk filter. Declared
+    /// here so `deny_unknown_fields` accepts metas that set it.
+    #[serde(default)]
+    pub test_exclusive: bool,
+    /// Pure I/O tools (read-file-stream, scan-fs, mongo-upsert, …) have no
+    /// business logic worth snapshot-testing — their correctness is proven by
+    /// the tool's own unit tests. Setting this to `true` excludes the tool's
+    /// stages from bulk `dpe test` runs AND from the `dpe coverage` denominator
+    /// (same exclusion as the hard-coded SKIP_TOOLS list, but declared per-tool).
+    /// Explicit per-stage runs (`dpe test pipeline:variant:stage`) still bypass
+    /// this — the user opted in intentionally. Default `false`.
+    #[serde(default)]
+    pub test_skipped: bool,
+    /// Free-form rationale for `test_skipped: true`. Surfaced in coverage
+    /// reports so reviewers can see WHY a tool was excluded without
+    /// hunting through git blame. Ignored by the runner otherwise.
+    #[serde(default)]
+    pub test_skipped_reason: Option<String>,
+    /// Catch-all for fields not in the schema above. Kept permissive (no
+    /// `deny_unknown_fields`) so an older runner can still read a newer
+    /// `meta.json` -- but each unknown key triggers a one-shot stderr
+    /// warning so typos like `"rumtime"` don't silently default to the
+    /// wrong runtime.
+    #[serde(flatten)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+/// Suppresses duplicate warnings within a single process. Keyed on
+/// `(tool_name, unknown_field)` so we don't spam stderr when the same
+/// `meta.json` is read multiple times during a session.
+fn warn_unknown_meta_fields(tool_name: &str, meta: &ToolMeta, source: &Path) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    if meta.extra.is_empty() { return; }
+    static SEEN: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut guard) = seen.lock() else { return };
+    for key in meta.extra.keys() {
+        let pair = (tool_name.to_string(), key.clone());
+        if guard.insert(pair) {
+            eprintln!(
+                "warning: tool '{tool_name}' meta.json has unknown field '{key}' \
+                 (source: {}). If this is a typo of a known field it will silently \
+                 default; check the spelling.",
+                source.display(),
+            );
+        }
+    }
 }
 
 /// What the runner uses to launch a stage.
@@ -88,6 +144,16 @@ pub enum BuiltinKind {
     /// (drop). Use to turn whole branches on/off per run without
     /// duplicating variants.
     Toggle,
+}
+
+impl BuiltinKind {
+    /// True for builtins whose behaviour is too thin to be meaningfully
+    /// snapshot-tested: `spread` (pure 1→N tee) and `toggle` (decision
+    /// fixed at plan-compile time, one branch always wins). Used by
+    /// coverage + test_runner to skip them in bulk-test runs.
+    pub fn is_test_skipped(&self) -> bool {
+        matches!(self, BuiltinKind::Spread | BuiltinKind::Toggle)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +255,10 @@ fn load_from_dir(dir: &Path) -> Result<ResolvedTool, ToolError> {
     let meta: ToolMeta = serde_json::from_str(crate::bom::strip_bom(&raw))
         .map_err(|e| ToolError::Parse(meta_path.clone(), e.to_string()))?;
 
+    // Warn-once on unknown fields so typos surface without making the
+    // schema strict (which would break forward-compat with newer metas).
+    warn_unknown_meta_fields(&meta.name, &meta, &meta_path);
+
     let invocation = build_invocation(&meta, dir)?;
     Ok(ResolvedTool { meta, dir: dir.to_path_buf(), invocation })
 }
@@ -253,6 +323,15 @@ fn builtin_kind(name: &str) -> Option<BuiltinKind> {
 }
 
 fn builtin_meta(name: &str, kind: BuiltinKind) -> ToolMeta {
+    // `test_skipped` for builtins maps to "no logic worth snapshot-testing":
+    //   - Spread: pure 1->N tee, no decision logic.
+    //   - Toggle: env-gated passthrough; decision is fixed at plan-compile
+    //             time (one branch always wins for the whole run), so an
+    //             isolated snapshot adds no signal.
+    // Filter / Route / GroupBy / Dedup all have logic worth testing; the
+    // test_runner's builtin_driver executes them as in-process tasks
+    // against seed input (see test_runner/builtin_driver.rs).
+    let test_skipped = kind.is_test_skipped();
     ToolMeta {
         name: name.to_string(),
         version: Some("builtin".to_string()),
@@ -271,6 +350,10 @@ fn builtin_meta(name: &str, kind: BuiltinKind) -> ToolMeta {
         test: None,
         settings_schema: None,
         spec: None,
+        test_exclusive: false,
+        test_skipped,
+        test_skipped_reason: None,
+        extra: Default::default(),
     }
 }
 
@@ -377,6 +460,33 @@ mod tests {
         assert!(matches!(r.invocation, Invocation::Binary { .. }));
     }
 
+    #[test] fn meta_json_with_test_skipped_parses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("pureio");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("meta.json"),
+            r#"{"name":"pureio","runtime":"rust","entry":"bin","test_skipped":true}"#,
+        ).unwrap();
+        mk_binary(&local, "bin");
+        let r = resolve("pureio", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert!(r.meta.test_skipped);
+        assert!(!r.meta.test_exclusive);
+    }
+
+    #[test] fn meta_json_test_skipped_defaults_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("normal");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("meta.json"),
+            r#"{"name":"normal","runtime":"rust","entry":"bin"}"#,
+        ).unwrap();
+        mk_binary(&local, "bin");
+        let r = resolve("normal", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert!(!r.meta.test_skipped);
+    }
+
     #[test] fn meta_json_with_spec_field_parses(/* regression: inbox 0004 */) {
         // dpe-tools tools (classify, doc-converter, llm) include a
         // `spec: "spec.yaml"` pointer in meta.json — used by tooling to
@@ -396,10 +506,12 @@ mod tests {
         assert_eq!(r.meta.spec.as_deref(), Some("spec.yaml"));
     }
 
-    #[test] fn meta_json_still_rejects_truly_unknown_fields() {
-        // Confirm we kept deny_unknown_fields. Typos like "rumtime" or
-        // bogus keys still fail loudly — `spec` is the only addition,
-        // not a relaxation of the schema.
+    #[test] fn meta_json_unknown_fields_ignored_for_forward_compat() {
+        // deny_unknown_fields was removed so older binaries can parse
+        // meta.json files produced by newer dpe versions without erroring.
+        // BUT unknown fields are now captured in `extra` and a one-shot
+        // warning is emitted to stderr -- so typos like "rumtime" don't
+        // silently default to the wrong runtime; they show up in logs.
         let tmp = tempfile::tempdir().unwrap();
         let local = tmp.path().join("tools").join("typoed");
         fs::create_dir_all(&local).unwrap();
@@ -408,10 +520,31 @@ mod tests {
             r#"{"name":"typoed","runtime":"rust","entry":"bin","rumtime":"rust"}"#,
         ).unwrap();
         mk_binary(&local, "bin");
-        let err = resolve("typoed", tmp.path(), &RunnerConfig::default()).unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains("unknown field") && msg.contains("rumtime"),
-            "expected typo rejection, got: {}", msg);
+        // Parse succeeds, name resolves correctly.
+        let r = resolve("typoed", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert_eq!(r.meta.name, "typoed");
+        // Unknown field is captured in `extra` (one warning was emitted
+        // to stderr during resolve; the OnceLock-backed dedup makes
+        // repeated resolves silent).
+        assert!(r.meta.extra.contains_key("rumtime"),
+            "expected unknown field 'rumtime' to land in extra, got: {:?}", r.meta.extra);
+    }
+
+    #[test] fn meta_json_test_skipped_reason_recognised() {
+        // `test_skipped_reason` is a recognised field (annotates WHY a
+        // tool is `test_skipped: true`) and MUST NOT appear in `extra`
+        // -- it's part of the schema, not a leftover unknown key.
+        let tmp = tempfile::tempdir().unwrap();
+        let local = tmp.path().join("tools").join("annotated");
+        fs::create_dir_all(&local).unwrap();
+        fs::write(
+            local.join("meta.json"),
+            r#"{"name":"annotated","runtime":"rust","entry":"bin","test_skipped":true,"test_skipped_reason":"pure I/O"}"#,
+        ).unwrap();
+        mk_binary(&local, "bin");
+        let r = resolve("annotated", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert_eq!(r.meta.test_skipped_reason.as_deref(), Some("pure I/O"));
+        assert!(!r.meta.extra.contains_key("test_skipped_reason"));
     }
 
     #[test] fn meta_json_with_utf8_bom_parses_cleanly() {
@@ -571,11 +704,14 @@ mod tests {
         assert!(resolve("t", tmp.path(), &RunnerConfig::default()).is_err());
     }
 
-    #[test] fn extra_meta_fields_rejected() {
+    #[test] fn extra_meta_fields_ignored() {
+        // Forward-compat: unknown fields pass through silently.
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path().join("tools").join("t");
         mk_meta(&d, r#"{"name":"t","runtime":"rust","entry":"b","bogus":"x"}"#);
-        assert!(resolve("t", tmp.path(), &RunnerConfig::default()).is_err());
+        mk_binary(&d, "b");
+        let r = resolve("t", tmp.path(), &RunnerConfig::default()).unwrap();
+        assert_eq!(r.meta.name, "t");
     }
 
     // ─── expand_home ───────────────────────────────────────────────────

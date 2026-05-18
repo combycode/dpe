@@ -133,7 +133,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, LexError> {
                     // exactly one ASCII byte OR by `len_utf8()`. Without
                     // this branch, `bytes[i] as char` would split a
                     // multi-byte sequence into garbage Latin-1 codepoints —
-                    // mojibake — and `'оплат'` etc. would never match a
+                    // mojibake — and `'файло'` etc. would never match a
                     // real Cyrillic v.sheet at runtime (regression: inbox
                     // 0022).
                     let ch = src[i..].chars().next()
@@ -222,25 +222,26 @@ mod tests {
     //
     // Pre-fix the lexer iterated `bytes[i] as char`, splitting every
     // multi-byte UTF-8 sequence into garbage Latin-1 codepoints. So
-    // `'оплат'` in YAML became mojibake at the Token::String level,
+    // `'файло'` in YAML became mojibake at the Token::String level,
     // and runtime `includes(real_cyrillic_v_sheet, mangled_literal)`
     // was always false. Test pins the bytes match the intended chars.
 
     #[test] fn string_cyrillic_lowercase_preserved() {
         // 5 chars × 2 bytes/char in UTF-8 → 10 bytes in the source,
         // BUT the Token::String must hold exactly the 5 chars.
-        let toks = tok("'оплат'");
+        let toks = tok("'файло'");
         let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
-        assert_eq!(s, "оплат");
+        assert_eq!(s, "файло");
         assert_eq!(s.chars().count(), 5);
-        assert_eq!(s.as_bytes(), [0xD0,0xBE, 0xD0,0xBF, 0xD0,0xBB, 0xD0,0xB0, 0xD1,0x82]);
+        // "файло" = ф(U+0444) а(U+0430) й(U+0439) л(U+043B) о(U+043E)
+        assert_eq!(s.as_bytes(), [0xD1,0x84, 0xD0,0xB0, 0xD0,0xB9, 0xD0,0xBB, 0xD0,0xBE]);
     }
 
     #[test] fn string_with_embedded_cyrillic_substring() {
         // Mixed: ASCII + Cyrillic + ASCII. Round-trip exact.
-        let toks = tok("'sheet оплаты APP4U'");
+        let toks = tok("'sheet файлов vendor-x'");
         let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
-        assert_eq!(s, "sheet оплаты APP4U");
+        assert_eq!(s, "sheet файлов vendor-x");
     }
 
     #[test] fn string_emoji_4byte_utf8_preserved() {
@@ -253,9 +254,9 @@ mod tests {
 
     #[test] fn string_cyrillic_mixed_with_escapes() {
         // Escape sequences must still work alongside Cyrillic content.
-        let toks = tok(r#"'оплат\n payouts'"#);
+        let toks = tok(r#"'файло\n files'"#);
         let s = match &toks[0] { Token::String(s) => s.clone(), _ => panic!() };
-        assert_eq!(s, "оплат\n payouts");
+        assert_eq!(s, "файло\n files");
     }
 
     #[test] fn keywords() {

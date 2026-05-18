@@ -17,6 +17,7 @@ use std::path::Path;
 
 use crate::config::RunnerConfig;
 use crate::env_interp::{EnvLookup, ProcessEnv};
+use crate::paths::PathResolver;
 use crate::types::ResolvedVariant;
 
 mod resolve;
@@ -51,6 +52,8 @@ pub enum ValidationError {
     MissingSettingsFile { stage: String, path: String },
     #[error("stage '{stage}': settings_file '{path}' is invalid JSON: {reason}")]
     BadSettingsFile { stage: String, path: String, reason: String },
+    #[error("stage '{stage}': required env var '{var}' is not set (declared in stage.env)")]
+    MissingRequiredEnv { stage: String, var: String },
 }
 
 /// Run every validation pass against a resolved variant and the runner
@@ -79,8 +82,12 @@ pub fn validate_with_env(
     config: &RunnerConfig,
     env: &dyn EnvLookup,
 ) -> Result<(), Vec<ValidationError>> {
+    // Build a static PathResolver from whatever DPE_* env vars are currently
+    // set. Unknown prefixes pass through unchanged — so $input in an
+    // expression compiles as-is when DPE_INPUT is not set.
+    let resolver = PathResolver::from_env();
     let mut errs = Vec::new();
-    resolve::run(variant, pipeline_dir, config, env, &mut errs);
+    resolve::run(variant, pipeline_dir, config, env, &resolver, &mut errs);
     link::run(variant, &mut errs);
     topology::run(variant, &mut errs);
     if errs.is_empty() { Ok(()) } else { Err(errs) }

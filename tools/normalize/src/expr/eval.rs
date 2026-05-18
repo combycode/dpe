@@ -454,18 +454,18 @@ mod tests {
     #[test] fn matches_fail() { assert!(!b("matches('nope', '^foo')")); }
 
     // ─── real-world expressions (SPEC §15 examples) ────────────────────
-    #[test] fn route_contract_with_confidence() {
-        // env.v.class.className == 'contract' && env.v.class.confidence > 80
+    #[test] fn route_alpha_with_confidence() {
+        // env.v.class.className == 'alpha' && env.v.class.confidence > 80
         let s = Scope::new().with("env", json!({
-            "t":"d", "v": {"class": {"className":"contract", "confidence": 95}}
-        })).with("v", json!({"class": {"className":"contract", "confidence": 95}}));
-        let expr = compile("v.class.className == 'contract' && v.class.confidence > 80").unwrap();
+            "t":"d", "v": {"class": {"className":"alpha", "confidence": 95}}
+        })).with("v", json!({"class": {"className":"alpha", "confidence": 95}}));
+        let expr = compile("v.class.className == 'alpha' && v.class.confidence > 80").unwrap();
         assert_eq!(evaluate(&expr, &s).unwrap(), json!(true));
     }
 
     #[test] fn route_fails_below_threshold() {
-        let s = Scope::new().with("v", json!({"class": {"className":"contract", "confidence": 60}}));
-        let expr = compile("v.class.className == 'contract' && v.class.confidence > 80").unwrap();
+        let s = Scope::new().with("v", json!({"class": {"className":"alpha", "confidence": 60}}));
+        let expr = compile("v.class.className == 'alpha' && v.class.confidence > 80").unwrap();
         assert_eq!(evaluate(&expr, &s).unwrap(), json!(false));
     }
 
@@ -477,7 +477,7 @@ mod tests {
 
     // ─── normalize helper (unit) ───────────────────────────────────────
     #[test] fn normalize_lowercases() { assert_eq!(normalize("HELLO"), "hello"); }
-    #[test] fn normalize_strips_ltd() { assert_eq!(normalize("ACME LTD"), "acme"); }
+    #[test] fn normalize_strips_ltd() { assert_eq!(normalize("ALPHA LTD"), "alpha"); }
     #[test] fn normalize_strips_punct_collapse_ws() {
         assert_eq!(normalize("a.b-c  d!!!"), "a b c d");
     }

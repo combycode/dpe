@@ -173,7 +173,7 @@ stages:
         let stage_cfg = &v.stages[sname];
         let tool = resolve(&stage_cfg.tool, tmp.path(), &RunnerConfig::default()).unwrap();
         let settings = stage_cfg.settings.clone().unwrap_or(serde_json::json!({}));
-        let s = spawn(&tool, &settings, &ctx, sname, 0, None).unwrap();
+        let s = spawn(&tool, &settings, &ctx, sname, 0, None, None).unwrap();
         stages.push(s);
     }
 
@@ -242,7 +242,7 @@ stages:
         let sc = &v.stages[sname];
         let tool = resolve(&sc.tool, tmp.path(), &RunnerConfig::default()).unwrap();
         let settings = sc.settings.clone().unwrap_or(serde_json::json!({}));
-        stages.push(spawn(&tool, &settings, &ctx, sname, 0, None).unwrap());
+        stages.push(spawn(&tool, &settings, &ctx, sname, 0, None, None).unwrap());
     }
     let handles = wire_linear(&mut stages).unwrap();
 

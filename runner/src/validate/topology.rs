@@ -96,6 +96,7 @@ mod tests {
                 replicas: 1, replicas_routing: ReplicasRouting::RoundRobin,
                 trace: true, cache: Some(CacheMode::Use), on_error: OnError::Drop,
                 routes: None, expression: None, on_false: None, dedup: None, group_by: None,
+                env: None,
             });
         }
         ResolvedVariant { pipeline: "p".into(), variant: "m".into(),
@@ -110,6 +111,7 @@ mod tests {
             trace: true, cache: Some(CacheMode::Use),
             on_error: OnError::Drop,
             routes: None, expression: None, on_false: None, dedup: None, group_by: None,
+            env: None,
         }
     }
     fn mk_variant(stages: Vec<(&str, Stage)>) -> ResolvedVariant {

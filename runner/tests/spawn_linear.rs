@@ -82,7 +82,7 @@ async fn spawn_single_mock_transforms_payload() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let settings = json!({ "tag": "s1", "transform": "uppercase" });
-    let mut st = spawn(&tool, &settings, &ctx, "s1-001", 0, None).unwrap();
+    let mut st = spawn(&tool, &settings, &ctx, "s1-001", 0, None, None).unwrap();
     assert!(st.pid.is_some_and(|p| p > 0));
 
     feed_stdin(&mut st, b"{\"t\":\"d\",\"id\":\"x\",\"src\":\"s\",\"v\":{\"name\":\"alice\"}}\n")
@@ -109,7 +109,7 @@ async fn spawn_passes_env_vars() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let settings = json!({ "tag": "with-env", "emit_shutdown_meta": true });
-    let mut st = spawn(&tool, &settings, &ctx, "s-001", 0, None).unwrap();
+    let mut st = spawn(&tool, &settings, &ctx, "s-001", 0, None, None).unwrap();
     feed_stdin(&mut st, b"{\"t\":\"d\",\"id\":\"1\",\"src\":\"\",\"v\":{}}\n").await.unwrap();
 
     let out = drain_stdout(&mut st).await.unwrap();
@@ -130,9 +130,9 @@ async fn linear_two_stages_pipe_correctly() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let s1 = spawn(&tool, &json!({"tag": "A", "transform": "uppercase"}),
-                   &ctx, "A-001", 0, None).unwrap();
+                   &ctx, "A-001", 0, None, None).unwrap();
     let s2 = spawn(&tool, &json!({"tag": "B", "transform": "add_one"}),
-                   &ctx, "B-002", 0, None).unwrap();
+                   &ctx, "B-002", 0, None, None).unwrap();
     let mut stages = vec![s1, s2];
 
     let handles = wire_linear(&mut stages).unwrap();
@@ -161,9 +161,9 @@ async fn linear_three_stages_trail_accumulates_in_order() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let mut stages = vec![
-        spawn(&tool, &json!({"tag": "first"}),  &ctx, "s1", 0, None).unwrap(),
-        spawn(&tool, &json!({"tag": "second"}), &ctx, "s2", 0, None).unwrap(),
-        spawn(&tool, &json!({"tag": "third"}),  &ctx, "s3", 0, None).unwrap(),
+        spawn(&tool, &json!({"tag": "first"}),  &ctx, "s1", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag": "second"}), &ctx, "s2", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag": "third"}),  &ctx, "s3", 0, None, None).unwrap(),
     ];
     let handles = wire_linear(&mut stages).unwrap();
 
@@ -187,10 +187,10 @@ async fn linear_middle_stage_drops_by_predicate() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let mut stages = vec![
-        spawn(&tool, &json!({"tag":"A"}), &ctx, "s1", 0, None).unwrap(),
+        spawn(&tool, &json!({"tag":"A"}), &ctx, "s1", 0, None, None).unwrap(),
         spawn(&tool, &json!({"drop_predicate":{"field":"v.skip","equals":true}}),
-              &ctx, "s2", 0, None).unwrap(),
-        spawn(&tool, &json!({"tag":"C"}), &ctx, "s3", 0, None).unwrap(),
+              &ctx, "s2", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag":"C"}), &ctx, "s3", 0, None, None).unwrap(),
     ];
     let handles = wire_linear(&mut stages).unwrap();
 
@@ -218,9 +218,9 @@ async fn linear_fan_out_in_middle_multiplies_output() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let mut stages = vec![
-        spawn(&tool, &json!({"tag":"A"}), &ctx, "s1", 0, None).unwrap(),
-        spawn(&tool, &json!({"fan_out":3}), &ctx, "s2", 0, None).unwrap(),
-        spawn(&tool, &json!({"tag":"C"}), &ctx, "s3", 0, None).unwrap(),
+        spawn(&tool, &json!({"tag":"A"}), &ctx, "s1", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"fan_out":3}), &ctx, "s2", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag":"C"}), &ctx, "s3", 0, None, None).unwrap(),
     ];
     let handles = wire_linear(&mut stages).unwrap();
 
@@ -243,7 +243,7 @@ async fn stage_crash_surfaces_exit_code() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut st = spawn(&tool, &json!({"crash_after": 1}), &ctx, "x", 0, None).unwrap();
+    let mut st = spawn(&tool, &json!({"crash_after": 1}), &ctx, "x", 0, None, None).unwrap();
     feed_stdin(&mut st, b"{\"t\":\"d\",\"id\":\"a\",\"src\":\"s\",\"v\":{}}\n\
                           {\"t\":\"d\",\"id\":\"b\",\"src\":\"s\",\"v\":{}}\n").await.unwrap();
 
@@ -260,7 +260,7 @@ async fn fail_on_startup_surfaces_nonzero_exit_with_no_io() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut st = spawn(&tool, &json!({"fail_on_startup": true}), &ctx, "x", 0, None).unwrap();
+    let mut st = spawn(&tool, &json!({"fail_on_startup": true}), &ctx, "x", 0, None, None).unwrap();
 
     // Don't feed anything — tool exits 2 before reading.
     let out = drain_stdout(&mut st).await.unwrap();
@@ -280,7 +280,7 @@ async fn graceful_shutdown_within_grace() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let st = spawn(&tool, &json!({}), &ctx, "x", 0, None).unwrap();
+    let st = spawn(&tool, &json!({}), &ctx, "x", 0, None, None).unwrap();
     let start = std::time::Instant::now();
     let statuses = shutdown_linear(vec![st], 5_000).await;
     let elapsed = start.elapsed();
@@ -296,6 +296,6 @@ async fn spawn_rejects_builtin_tools() {
     let tmp = pipeline_dir();
     let ctx = ctx_for(tmp.path());
     let tool = resolve("route", tmp.path(), &Default::default()).unwrap();
-    let err = spawn(&tool, &json!({}), &ctx, "r", 0, None).unwrap_err();
+    let err = spawn(&tool, &json!({}), &ctx, "r", 0, None, None).unwrap_err();
     assert!(matches!(err, dpe::spawn::SpawnError::IsBuiltin(_)));
 }

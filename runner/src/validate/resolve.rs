@@ -13,6 +13,7 @@ use std::path::Path;
 use crate::config::RunnerConfig;
 use crate::env_interp::{interpolate_string, EnvLookup};
 use crate::expr;
+use crate::paths::PathResolver;
 use crate::tools::{resolve as resolve_tool, BuiltinKind, Invocation, ToolError};
 use crate::types::{ResolvedVariant, Stage};
 
@@ -23,12 +24,14 @@ pub(super) fn run(
     pipeline_dir: &Path,
     config: &RunnerConfig,
     env: &dyn EnvLookup,
+    resolver: &PathResolver,
     errs: &mut Vec<ValidationError>,
 ) {
     for (name, stage) in &variant.stages {
         validate_stage_structure(name, stage, errs);
-        check_tool_and_expressions(name, stage, pipeline_dir, config, env, errs);
+        check_tool_and_expressions(name, stage, pipeline_dir, config, env, resolver, errs);
         check_settings_file(name, stage, pipeline_dir, errs);
+        check_env_vars(name, stage, env, errs);
     }
 }
 
@@ -38,12 +41,13 @@ fn check_tool_and_expressions(
     pipeline_dir: &Path,
     config: &RunnerConfig,
     env: &dyn EnvLookup,
+    resolver: &PathResolver,
     errs: &mut Vec<ValidationError>,
 ) {
     match resolve_tool(&stage.tool, pipeline_dir, config) {
         Ok(rt) => match builtin_of(&rt.invocation) {
-            Some(BuiltinKind::Route) => check_route_expressions(name, stage, env, errs),
-            Some(BuiltinKind::Filter) => check_filter_expression(name, stage, env, errs),
+            Some(BuiltinKind::Route) => check_route_expressions(name, stage, env, resolver, errs),
+            Some(BuiltinKind::Filter) => check_filter_expression(name, stage, env, resolver, errs),
             _ => {}
         },
         Err(ToolError::NotFound { name: _, searched }) => {
@@ -67,15 +71,15 @@ fn check_route_expressions(
     name: &str,
     stage: &Stage,
     env: &dyn EnvLookup,
+    resolver: &PathResolver,
     errs: &mut Vec<ValidationError>,
 ) {
     if let Some(routes) = &stage.routes {
         for (channel, expr_src) in routes {
-            // Apply env-var interpolation before lexing — matches the
-            // plan-time pre-pass in `dag::plan::interpolate_stage_config`.
+            // Pass 1: env-var interpolation — matches plan-time pre-pass.
             // Without this, `dpe check` would error on a literal '$'
             // even though `dpe run` substitutes ${VAR} cleanly.
-            let interpolated = match interpolate_string(expr_src, env) {
+            let after_env = match interpolate_string(expr_src, env) {
                 Ok(s) => s,
                 Err(e) => {
                     errs.push(ValidationError::RouteExpr {
@@ -86,12 +90,23 @@ fn check_route_expressions(
                     continue;
                 }
             };
-            if let Err(e) = expr::compile(&interpolated) {
-                errs.push(ValidationError::RouteExpr {
-                    stage: name.into(),
-                    channel: channel.clone(),
-                    reason: e.to_string(),
-                });
+
+            // Pass 2: PathResolver substring replacement — matches plan-time
+            // resolve_stage_expressions. Unknown prefixes pass through.
+            let resolved = resolver.resolve_in_string(&after_env);
+
+            // Pass 3: expression compilation. Skipped in lenient env mode
+            // (AllowUndefinedEnv) because empty substitutions can leave
+            // dangling operators (e.g. `v.x == ` with no RHS). Expressions
+            // will be validated with real values at `dpe run` time.
+            if env.is_strict() {
+                if let Err(e) = expr::compile(&resolved) {
+                    errs.push(ValidationError::RouteExpr {
+                        stage: name.into(),
+                        channel: channel.clone(),
+                        reason: e.to_string(),
+                    });
+                }
             }
         }
     }
@@ -101,12 +116,12 @@ fn check_filter_expression(
     name: &str,
     stage: &Stage,
     env: &dyn EnvLookup,
+    resolver: &PathResolver,
     errs: &mut Vec<ValidationError>,
 ) {
     if let Some(expr_src) = &stage.expression {
-        // See note in check_route_expressions — env-interp pre-pass to
-        // match plan-time behavior.
-        let interpolated = match interpolate_string(expr_src, env) {
+        // Pass 1: env-var interpolation.
+        let after_env = match interpolate_string(expr_src, env) {
             Ok(s) => s,
             Err(e) => {
                 errs.push(ValidationError::FilterExpr {
@@ -116,11 +131,40 @@ fn check_filter_expression(
                 return;
             }
         };
-        if let Err(e) = expr::compile(&interpolated) {
-            errs.push(ValidationError::FilterExpr {
-                stage: name.into(),
-                reason: e.to_string(),
-            });
+
+        // Pass 2: PathResolver substring replacement.
+        let resolved = resolver.resolve_in_string(&after_env);
+
+        // Pass 3: expression compilation. Skipped in lenient env mode
+        // (AllowUndefinedEnv) — see note in check_route_expressions.
+        if env.is_strict() {
+            if let Err(e) = expr::compile(&resolved) {
+                errs.push(ValidationError::FilterExpr {
+                    stage: name.into(),
+                    reason: e.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Validate `stage.env` declared required env vars. With ProcessEnv, an
+/// unset var reports MissingRequiredEnv. With AllowUndefinedEnv, all vars
+/// return Some("") so the check is transparently skipped.
+fn check_env_vars(
+    name: &str,
+    stage: &Stage,
+    env: &dyn EnvLookup,
+    errs: &mut Vec<ValidationError>,
+) {
+    if let Some(required_envs) = &stage.env {
+        for var_name in required_envs {
+            if env.get(var_name).is_none() {
+                errs.push(ValidationError::MissingRequiredEnv {
+                    stage: name.into(),
+                    var: var_name.clone(),
+                });
+            }
         }
     }
 }
@@ -189,6 +233,7 @@ mod tests {
             trace: true, cache: Some(CacheMode::Use),
             on_error: OnError::Drop,
             routes: None, expression: None, on_false: None, dedup: None, group_by: None,
+            env: None,
         }
     }
     fn stg_route(channels: &[(&str, &str)]) -> Stage {
@@ -248,6 +293,43 @@ mod tests {
         let v = mk_variant(vec![
             ("src", stg("x", Some(Input::One("$input".into())))),
             ("f",   stg_filter("v == ==")),
+        ]);
+        let errs = validate(&v, tmp.path(), &RunnerConfig::default()).unwrap_err();
+        assert!(errs.iter().any(|e| matches!(e, ValidationError::FilterExpr { .. })));
+    }
+
+    #[test] fn allow_undefined_env_skips_expression_compilation() {
+        // Regression: `v.x == ${BATCH}` with AllowUndefinedEnv substitutes ""
+        // → `v.x == ` which is syntactically invalid. The lenient path must
+        // NOT push a FilterExpr/RouteExpr error — expression will be validated
+        // at `dpe run` time with real env vars.
+        use crate::env_interp::AllowUndefinedEnv;
+        let key = "DPE_CHECK_ALLOW_UNDEF_EXPR_XYZABC";
+        std::env::remove_var(key);
+
+        let tmp = dummy_pipeline_dir();
+        let v = mk_variant(vec![
+            ("src", stg("x", Some(Input::One("$input".into())))),
+            // Expression is invalid after empty substitution: `v.n == `
+            ("f",   stg_filter(&format!("v.n == ${{{}}}", key))),
+        ]);
+        let resolver = crate::paths::PathResolver::default();
+        let mut errs = Vec::new();
+        super::run(&v, tmp.path(), &RunnerConfig::default(), &AllowUndefinedEnv, &resolver, &mut errs);
+        // No FilterExpr error — lenient mode skips compilation.
+        assert!(
+            !errs.iter().any(|e| matches!(e, ValidationError::FilterExpr { .. })),
+            "expected no FilterExpr in lenient mode, got: {:?}", errs,
+        );
+    }
+
+    #[test] fn strict_env_still_catches_genuinely_broken_expressions() {
+        // With ProcessEnv and BATCH set to a real value, a truly broken
+        // expression (not from empty substitution) must still error.
+        let tmp = dummy_pipeline_dir();
+        let v = mk_variant(vec![
+            ("src", stg("x", Some(Input::One("$input".into())))),
+            ("f",   stg_filter("v.a &&& v.b")),  // &&& is not valid
         ]);
         let errs = validate(&v, tmp.path(), &RunnerConfig::default()).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::FilterExpr { .. })));

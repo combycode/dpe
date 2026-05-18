@@ -69,7 +69,7 @@ pub fn spawn_group(
     }
     let mut instances = Vec::with_capacity(replicas as usize);
     for i in 0..replicas {
-        let stage = spawn(tool, settings, session, stage_id, i, stage_cache_override)
+        let stage = spawn(tool, settings, session, stage_id, i, stage_cache_override, None)
             .map_err(|e| ReplicaError::Spawn { stage_id: stage_id.into(), index: i, source: e })?;
         instances.push(stage);
     }
