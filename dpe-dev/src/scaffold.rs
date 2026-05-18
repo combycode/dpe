@@ -169,11 +169,7 @@ pub(crate) fn scaffold(
     println!("[scaffold] wrote {} files to {:?}", file_count, out);
     println!("[scaffold] framework: {:?}", framework_dir);
     println!("[scaffold] next:");
-    match runtime {
-        Runtime::Rust   => println!("  cd {:?} && dpe-dev build . && dpe-dev test . && dpe-dev verify .", out),
-        Runtime::Bun    => println!("  cd {:?} && dpe-dev build . && dpe-dev test . && dpe-dev verify .", out),
-        Runtime::Python => println!("  cd {:?} && dpe-dev build . && dpe-dev test . && dpe-dev verify .", out),
-    }
+    println!("  cd {:?} && dpe-dev build . && dpe-dev test .", out);
     let _ = runtime;
     Ok(())
 }

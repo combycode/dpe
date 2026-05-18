@@ -55,7 +55,7 @@ cp "$SPEC_ABS" "$TOOL_DIR/spec.yaml"
 echo "[3/4] claude headless (log: $LOG_FILE)"
 mkdir -p "$(dirname "$LOG_FILE")"
 
-PROMPT="Read spec.yaml in the current working directory. Follow the dpe-tool skill from $EXPERIMENTS/.claude/skills/dpe-tool/SKILL.md. Implement src/main.* per spec, expand tests, regenerate verify/ from spec.yaml tests. Then run: $DPE_DEV build . ; $DPE_DEV test . ; $DPE_DEV verify . -- iterate until all three exit 0."
+PROMPT="Read spec.yaml in the current working directory. Follow the dpe-tool skill from $EXPERIMENTS/.claude/skills/dpe-tool/SKILL.md. Implement src/main.* per spec, expand tests/ to cover spec.yaml's tests[] cases (spawn the built binary, pipe input.ndjson to stdin, diff stdout against expected.ndjson). Then run: $DPE_DEV build . ; $DPE_DEV test . -- iterate until both exit 0."
 
 (
     cd "$TOOL_DIR"
@@ -67,9 +67,8 @@ PROMPT="Read spec.yaml in the current working directory. Follow the dpe-tool ski
 ) || echo "       claude exited: $?"
 
 echo "[4/4] independent verification"
-"$DPE_DEV" build  "$TOOL_DIR"
-"$DPE_DEV" test   "$TOOL_DIR"
-"$DPE_DEV" verify "$TOOL_DIR"
+"$DPE_DEV" build "$TOOL_DIR"
+"$DPE_DEV" test  "$TOOL_DIR"
 
 echo ""
 echo "[done] $NAME ready at $TOOL_DIR"

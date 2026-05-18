@@ -9,8 +9,9 @@
 #   output       — envelope contract
 #   tests        — acceptance cases (black-box: settings + input → expected)
 #
-# Each test case also lands in verify/<case-name>/{settings.json, input.ndjson, expected.ndjson}
-# `dpe-dev verify .` runs all of them.
+# Each test case becomes a language-native test under tests/ (cargo test for Rust,
+# pytest for Python, `bun test` for Bun) that spawns the built binary, pipes the
+# input lines to stdin, and diffs stdout against expected as canonical JSON.
 
 name: "{{tool_name_kebab}}"
 runtime: "rust"

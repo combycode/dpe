@@ -1,6 +1,6 @@
 # dpe-dev
 
-Tool-authoring CLI for the [DPE](https://github.com/combycode/dpe) data processing engine. Scaffold, build, test, and verify custom tools in Rust, Python, or TypeScript / Bun.
+Tool-authoring CLI for the [DPE](https://github.com/combycode/dpe) data processing engine. Scaffold, build, and test custom tools in Rust, Python, or TypeScript / Bun.
 
 ## Install
 
@@ -25,10 +25,11 @@ dpe-dev scaffold --name my-tool --runtime bun    --out ./my-tool --description "
 dpe-dev scaffold --name my-tool --runtime python --out ./my-tool --description "what it does"
 
 cd my-tool
-dpe-dev build  .   # cargo build --release / bun install / pip install -e .
-dpe-dev test   .   # cargo test / bun test / pytest
-dpe-dev verify .   # spawn the tool, feed verify/case-*/input.ndjson, diff stdout vs expected.ndjson
+dpe-dev build .    # cargo build --release / bun install / pip install -e .
+dpe-dev test  .    # cargo test / bun test / pytest
 ```
+
+For pipeline-context stage testing (envelopes through a real variant + cache + env), use `dpe test <pipeline>:<variant>:<stage>:<case>` from the runner CLI — see `dpe test --help`.
 
 ## Commands
 
@@ -37,7 +38,6 @@ dpe-dev verify .   # spawn the tool, feed verify/case-*/input.ndjson, diff stdou
 | `dpe-dev scaffold` | create a new tool from a runtime template |
 | `dpe-dev build <dir>` | runtime-aware build (cargo / bun install / pip install -e .) |
 | `dpe-dev test  <dir>` | runtime-aware test (cargo test / bun test / pytest) |
-| `dpe-dev verify <dir>` | spawn the built binary and diff its NDJSON output against fixtures |
 | `dpe-dev check <dir>` | static checks (meta.json valid, spec.yaml parses, entry exists) |
 | `dpe-dev setup [path]` | bootstrap a dev workspace with the embedded skill pack and fixtures |
 

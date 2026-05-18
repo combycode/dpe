@@ -9,10 +9,9 @@ mod bom;
 mod embedded;
 mod scaffold;
 mod setup;
-mod verify;
 
 #[derive(Parser)]
-#[command(name = "dpe-dev", version, about = "Scaffold, build, test, and verify DPE tools")]
+#[command(name = "dpe-dev", version, about = "Scaffold, build, and test DPE tools")]
 struct Cli {
     /// Runner config file. Resolution order matches `dpe`:
     /// `--config` → `DPE_CONFIG` env → `<cwd>/config.toml` → `~/.dpe/config.toml`
@@ -95,10 +94,6 @@ enum Cmd {
     Test {
         dir: PathBuf,
     },
-    /// Run the verify cases (spawn the built tool, feed input, diff stdout).
-    Verify {
-        dir: PathBuf,
-    },
     /// Static checks — meta.json valid, spec.yaml parses, binary entry exists.
     Check {
         dir: PathBuf,
@@ -140,7 +135,6 @@ fn main() -> Result<()> {
         }
         Cmd::Build { dir, full } => build(&dir, full),
         Cmd::Test  { dir }       => test(&dir),
-        Cmd::Verify{ dir }       => verify::verify(&dir),
         Cmd::Setup { path, force } => {
             let ws = setup::setup(path, force, &config_path)?;
             println!("[OK] workspace ready: {}", ws.display());

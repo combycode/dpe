@@ -1,8 +1,8 @@
 [package]
 name = "dpe-dev"
-version = "2.0.1"
+version = "2.0.2"
 edition = "2021"
-description = "Tool development CLI: scaffold, build, test, verify tools for DPE pipelines"
+description = "Tool development CLI: scaffold, build, test tools for DPE pipelines"
 license = "AGPL-3.0-or-later"
 
 [[bin]]

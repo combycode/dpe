@@ -1,7 +1,7 @@
 {
   "name": "dpe-dev",
   "version": "2.0.1",
-  "description": "DPE tool-authoring CLI -- scaffold, build, test, verify",
+  "description": "DPE tool-authoring CLI -- scaffold, build, test",
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",

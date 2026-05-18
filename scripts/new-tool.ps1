@@ -1,4 +1,4 @@
-# new-tool.ps1 — scaffold + headless-generate a DPE tool from a spec file.
+# new-tool.ps1 -- scaffold + headless-generate a DPE tool from a spec file.
 #
 # Usage:
 #   powershell -File scripts/new-tool.ps1 <name> <runtime> <spec-path>
@@ -43,7 +43,7 @@ Write-Host "[2/4] copy spec -> spec.yaml" -ForegroundColor Cyan
 Copy-Item $SpecAbs (Join-Path $ToolDir 'spec.yaml') -Force
 
 Write-Host "[3/4] claude headless (log: $LogFile)" -ForegroundColor Cyan
-$Prompt = "Read spec.yaml in the current working directory. Follow the dpe-tool skill from $Experiments/.claude/skills/dpe-tool/SKILL.md. Implement src/main.* per spec, expand tests, regenerate verify/ from spec.yaml tests. Then run: $DpeDev build . ; $DpeDev test . ; $DpeDev verify . -- iterate until all three exit 0."
+$Prompt = "Read spec.yaml in the current working directory. Follow the dpe-tool skill from $Experiments/.claude/skills/dpe-tool/SKILL.md. Implement src/main.* per spec, expand tests/ to cover spec.yaml's tests[] cases (spawn the built binary, pipe input.ndjson to stdin, diff stdout against expected.ndjson). Then run: $DpeDev build . ; $DpeDev test . -- iterate until both exit 0."
 
 New-Item -ItemType Directory -Path (Split-Path $LogFile) -Force | Out-Null
 
@@ -55,12 +55,10 @@ Pop-Location
 Write-Host "       claude exited: $claudeExit" -ForegroundColor Gray
 
 Write-Host "[4/4] independent verification" -ForegroundColor Cyan
-& $DpeDev build  $ToolDir
+& $DpeDev build $ToolDir
 if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 1 }
-& $DpeDev test   $ToolDir
+& $DpeDev test $ToolDir
 if ($LASTEXITCODE -ne 0) { Write-Error "tests failed"; exit 1 }
-& $DpeDev verify $ToolDir
-if ($LASTEXITCODE -ne 0) { Write-Error "verify failed"; exit 1 }
 
 Write-Host ""
 Write-Host "[done] $Name ready at $ToolDir" -ForegroundColor Green

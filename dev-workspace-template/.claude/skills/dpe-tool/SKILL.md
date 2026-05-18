@@ -61,24 +61,26 @@ In `tests/` (or the runtime's equivalent), write unit tests that exercise the pr
 
 ### 5. Run the full cycle
 
-Execute, in order. **All three must exit 0**:
+Execute, in order. **Both must exit 0**:
 
 ```
 dpe-dev build .
 dpe-dev test .
-dpe-dev verify .
 ```
 
 On failure:
 - `build` failed → syntax / import / compile error. Fix, retry build only.
 - `test` failed → unit tests don't match behaviour. Fix the code or the test (whichever is wrong per spec).
-- `verify` failed → the scaffolded binary + real input doesn't match expected output. This is the hardest one; re-read the spec's test cases and check input encoding, settings handling, output ordering.
 
-Iterate. Don't stop until all three pass.
+Iterate. Don't stop until both pass.
+
+End-to-end stage testing happens via `dpe test <pipeline>:<stage>` once
+the tool is wired into a pipeline (see `docs/testing.md` in the dpe
+monorepo) — that's a separate downstream check, not part of this loop.
 
 ### 6. Done
 
-When all three commands exit 0, your work is complete. Report briefly: which cases pass, line count of implementation.
+When both commands exit 0, your work is complete. Report briefly: which cases pass, line count of implementation.
 
 ## Envelope rules (DO NOT VIOLATE)
 

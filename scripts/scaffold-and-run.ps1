@@ -1,4 +1,4 @@
-# Scaffold a new tool and run the full scaffold -> build -> test -> verify cycle.
+# Scaffold a new tool and run the full scaffold -> build -> test cycle.
 #
 # Usage:
 #   powershell scripts/scaffold-and-run.ps1 -Name <kebab-name> -Runtime <rust|bun|python> -Out <dir> [-Description "..."]
@@ -30,8 +30,4 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "`n[scaffold-and-run] test"
 & $DpeDev test $Out
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-Write-Host "`n[scaffold-and-run] verify"
-& $DpeDev verify $Out
 exit $LASTEXITCODE

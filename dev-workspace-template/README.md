@@ -27,9 +27,8 @@ dpe-dev scaffold --name uppercase-text --runtime bun --out ./tools/uppercase-tex
 cp fixtures/uppercase-text.yaml tools/uppercase-text/spec.yaml
 
 # Implement in your editor, then:
-dpe-dev build  tools/uppercase-text
-dpe-dev test   tools/uppercase-text
-dpe-dev verify tools/uppercase-text
+dpe-dev build tools/uppercase-text
+dpe-dev test  tools/uppercase-text
 ```
 
 ## Autonomous headless build — let Claude do it
@@ -42,7 +41,7 @@ dpe-dev scaffold --name uppercase-text --runtime bun --out tools/uppercase-text
 cp fixtures/uppercase-text.yaml tools/uppercase-text/spec.yaml
 
 # 3. Launch Claude headless from the workspace root
-claude -p "Read spec.yaml in tools/uppercase-text/. Follow the dpe-tool skill: implement the processor, expand tests, regenerate verify/ from the spec's test cases, and run dpe-dev build/test/verify until all three exit 0." \
+claude -p "Read spec.yaml in tools/uppercase-text/. Follow the dpe-tool skill: implement the processor, expand tests, and run dpe-dev build/test until both exit 0." \
   --output-format stream-json --verbose \
   --permission-mode bypassPermissions \
   --add-dir tools/uppercase-text
@@ -51,12 +50,13 @@ claude -p "Read spec.yaml in tools/uppercase-text/. Follow the dpe-tool skill: i
 Verify afterwards:
 
 ```bash
-dpe-dev build  tools/uppercase-text
-dpe-dev test   tools/uppercase-text
-dpe-dev verify tools/uppercase-text
+dpe-dev build tools/uppercase-text
+dpe-dev test  tools/uppercase-text
 ```
 
-All three exit 0 → success.
+Both exit 0 → success. End-to-end stage testing happens later via
+`dpe test <pipeline>:<stage>` once the tool is wired into a pipeline —
+see `docs/testing.md`.
 
 ## Notes
 
