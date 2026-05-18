@@ -22,6 +22,7 @@ pub mod atomic;
 pub mod cache;
 pub mod context;
 pub mod envelope;
+pub mod paths;
 pub mod polling;
 pub mod pool;
 pub mod runtime;
@@ -31,6 +32,7 @@ pub mod prelude {
     pub use crate::atomic::{write_atomic, write_atomic_async};
     pub use crate::context::Context;
     pub use crate::envelope::{hash_string, hash_file};
+    pub use crate::paths::EnvPaths;
     pub use crate::polling::{poll_until, poll_until_async, PollOutcome};
     pub use crate::pool::{HandleEntry, LruPool};
     pub use crate::runtime::{Tool, ProcessorFn};

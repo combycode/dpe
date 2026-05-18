@@ -26,6 +26,7 @@ import {
   writeStats,
   writeTrace,
 } from './envelope';
+import { EnvPaths } from './paths';
 
 export interface QueueItem {
   queue: string;
@@ -45,15 +46,17 @@ export class Context {
   readonly src: string;
   readonly memory: Memory;
   private readonly _runtime: RuntimeLike;
+  private readonly _paths: EnvPaths;
   /** Labels accumulated by ctx.trace(k, v). Flushed (merged) as one
    *  {type:"trace"} stderr event before each ctx.output(), then cleared. */
   private _labels: Record<string, JSONValue> = {};
 
-  constructor(id: string, src: string, memory: Memory, runtime: RuntimeLike) {
+  constructor(id: string, src: string, memory: Memory, runtime: RuntimeLike, paths?: EnvPaths) {
     this.id = id;
     this.src = src;
     this.memory = memory;
     this._runtime = runtime;
+    this._paths = paths ?? new EnvPaths();
   }
 
   /** Accumulate a label on this invocation's next output envelope. */
@@ -72,10 +75,11 @@ export class Context {
     const outId = opts.id ?? this.id;
     const outSrc = opts.src ?? this.src;
     // Emit merged trace first (always, even with empty labels), then data, then clear.
-    // channel:"data" → runner counts as rows_out.
+    // channel:"data" -> runner counts as rows_out.
     writeTrace(outId, outSrc, this._labels, 'data');
     this._labels = {};
-    writeData(v, outId, outSrc);
+    // Tokenize absolute paths back to $token form before writing to stdout.
+    writeData(this._paths.tokenizeValue(v), outId, outSrc);
   }
 
   emit(queue: string, v: JSONValue, opts: { id?: string; src?: string } = {}): void {
@@ -94,8 +98,9 @@ export class Context {
   meta(v: JSONValue): void {
     // Emit a meta-channel trace before the meta envelope so the runner
     // can increment its per-stage `meta` counter. Inherits ctx id/src.
+    // Tokenize absolute paths back to $token form.
     writeTrace(this.id, this.src, {}, 'meta');
-    writeMeta(v);
+    writeMeta(this._paths.tokenizeValue(v));
   }
 
   log(msg: string, opts: { level?: string } & Record<string, JSONValue> = {}): void {

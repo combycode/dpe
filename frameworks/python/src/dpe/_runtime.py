@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dpe._accumulators import Memory
 from dpe._context import Context
 from dpe._envelope import parse_envelope, write_input, write_log
+from dpe._paths import EnvPaths
 
 
 class Runtime:
@@ -22,6 +23,7 @@ class Runtime:
         self.processors: dict[str, Callable] = {}
         self._queue: deque = deque()
         self._shutdown = False
+        self._paths = EnvPaths()
 
     def enqueue(self, queue_name: str, v, id: str, src: str):
         """Add item to internal queue."""
@@ -40,7 +42,7 @@ class Runtime:
                 write_log(f"No processor for queue '{name}', dropping item", "warn")
                 continue
 
-            ctx = Context(item_id, item_src, self.memory, self)
+            ctx = Context(item_id, item_src, self.memory, self, self._paths)
             try:
                 proc(v, self.settings, ctx)
             except Exception as e:
@@ -52,7 +54,7 @@ class Runtime:
             write_log(f"Queue drain hit safety limit ({max_iterations})", "error")
 
     def create_ctx(self, id: str, src: str) -> Context:
-        return Context(id, src, self.memory, self)
+        return Context(id, src, self.memory, self, self._paths)
 
     def _handle_signal(self, signum, frame):
         self._shutdown = True
@@ -98,6 +100,8 @@ class Runtime:
             id = envelope.get("id", "")
             src = envelope.get("src", "")
             v = envelope.get("v", {})
+            # Resolve $token paths in v before handing to processor.
+            v = self._paths.resolve_value(v)
 
             # Emit an `input` event BEFORE the processor runs so the runner
             # can count rows_in for every stage that reads stdin — including

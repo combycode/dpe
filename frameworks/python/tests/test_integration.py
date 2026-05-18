@@ -1,6 +1,7 @@
 """Integration tests — full tool lifecycle via subprocess."""
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -546,3 +547,99 @@ class TestContext:
 
         assert data[0]["v"]["id"] == "my-id"
         assert data[0]["v"]["src"] == "my-src"
+
+
+class TestEnvPathsRoundTrip:
+    def _run_with_env(self, code, settings, stdin_lines, env_overrides):
+        """Like run_tool_code but injects custom DPE_* env vars into the subprocess."""
+        import subprocess
+        import sys
+        import tempfile
+        import textwrap
+        from pathlib import Path
+
+        stdin_data = (
+            "\n".join(json.dumps(r) for r in stdin_lines) + "\n" if stdin_lines else ""
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False,
+            dir=tempfile.gettempdir(), encoding="utf-8",
+        ) as f:
+            f.write(textwrap.dedent(code))
+            f.flush()
+            tool_path = f.name
+
+        env = {**os.environ, **env_overrides}
+        result = subprocess.run(
+            [sys.executable, tool_path, json.dumps(settings)],
+            input=stdin_data, capture_output=True, text=True,
+            timeout=30, env=env,
+        )
+        Path(tool_path).unlink(missing_ok=True)
+
+        data = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                rec = json.loads(line)
+                if rec.get("t") == "d":
+                    data.append(rec)
+        return data
+
+    def test_token_resolved_on_input(self):
+        """$input in envelope v is expanded to abs path before processor sees it.
+
+        The processor inspects the path (not outputs it) so the tokenize-on-output
+        step does not reverse the expansion — we test the expansion independently.
+        """
+        data = self._run_with_env("""
+            import dpe
+
+            def process_input(v, settings, ctx):
+                # Check the resolved value; output a boolean, not the path itself,
+                # so the tokenize-on-output step doesn't convert it back.
+                ctx.output({"starts_abs": v["path"].startswith("/mnt/drive")})
+
+            if __name__ == "__main__":
+                dpe.run()
+        """, {}, [inp({"path": "$input/data.csv"})],
+        {"DPE_INPUT": "/mnt/drive"})
+
+        assert data[0]["v"]["starts_abs"] is True
+
+    def test_abs_path_tokenized_on_output(self):
+        """Absolute paths in ctx.output(v) are tokenized back to $token form.
+
+        The processor hardcodes an absolute path string (not from resolved input)
+        so we're testing only the output tokenization.
+        """
+        data = self._run_with_env("""
+            import dpe
+
+            def process_input(v, settings, ctx):
+                # Output a hard-coded abs path -- not from resolved input.
+                ctx.output({"path": "/mnt/drive/result.csv"})
+
+            if __name__ == "__main__":
+                dpe.run()
+        """, {}, [inp({"x": 1})],
+        {"DPE_INPUT": "/mnt/drive"})
+
+        assert data[0]["v"]["path"] == "$input/result.csv"
+
+    def test_no_env_passthrough(self):
+        """Without DPE_* vars set, $token paths pass through unchanged."""
+        env_overrides = {k: "" for k in [
+            "DPE_INPUT", "DPE_OUTPUT", "DPE_CONFIGS",
+            "DPE_STORAGE", "DPE_TEMP", "DPE_SESSION",
+        ]}
+        data = self._run_with_env("""
+            import dpe
+
+            def process_input(v, settings, ctx):
+                ctx.output(v)
+
+            if __name__ == "__main__":
+                dpe.run()
+        """, {}, [inp({"path": "$input/foo"})], env_overrides)
+
+        assert data[0]["v"]["path"] == "$input/foo"

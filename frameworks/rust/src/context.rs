@@ -5,6 +5,7 @@ use std::io::Write;
 
 use crate::accumulators::Memory;
 use crate::envelope;
+use crate::paths::EnvPaths;
 
 /// Queue item: (queue_name, v, id, src)
 pub type QueueItem = (String, Value, String, String);
@@ -17,6 +18,7 @@ pub struct Context<'a> {
     queue: &'a mut Vec<QueueItem>,
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,
+    paths: EnvPaths,
     /// Labels accumulated by ctx.trace(k, v). Flushed (merged) as one
     /// {type:"trace"} stderr event before each ctx.output(), then cleared.
     labels: Map<String, Value>,
@@ -30,8 +32,9 @@ impl<'a> Context<'a> {
         queue: &'a mut Vec<QueueItem>,
         stdout: &'a mut dyn Write,
         stderr: &'a mut dyn Write,
+        paths: EnvPaths,
     ) -> Self {
-        Self { id, src, memory, queue, stdout, stderr, labels: Map::new() }
+        Self { id, src, memory, queue, stdout, stderr, paths, labels: Map::new() }
     }
 
     /// Accumulate a label on this invocation's next output envelope.
@@ -50,11 +53,14 @@ impl<'a> Context<'a> {
     /// Flushes accumulated trace labels (merged) first, then the envelope.
     /// Trace event carries `channel:"data"` so the runner counts it as
     /// `rows_out` (vs `meta` from `ctx.meta`).
+    /// Absolute paths in `v` are reverse-tokenized to `$token/...` form before
+    /// writing so downstream stages receive portable path references.
     pub fn output(&mut self, v: Value, id: Option<&str>, src: Option<&str>) {
         let out_id = id.unwrap_or(&self.id).to_string();
         let out_src = src.unwrap_or(&self.src).to_string();
         let labels_value = Value::Object(std::mem::take(&mut self.labels));
         envelope::write_trace(&out_id, &out_src, &labels_value, Some("data"), &mut self.stderr);
+        let v = self.paths.tokenize_value(v);
         envelope::write_data(&v, &out_id, &out_src, &mut self.stdout);
     }
 
@@ -71,9 +77,11 @@ impl<'a> Context<'a> {
     /// is what lets the runner increment the per-stage `meta` counter.
     /// The trace inherits the current invocation's id/src; meta envelopes
     /// don't carry their own id (no `t:"d"` form on stdout).
+    /// Absolute paths in `v` are reverse-tokenized to `$token/...` form.
     pub fn meta(&mut self, v: Value) {
         let empty = Value::Object(serde_json::Map::new());
         envelope::write_trace(&self.id, &self.src, &empty, Some("meta"), &mut self.stderr);
+        let v = self.paths.tokenize_value(v);
         envelope::write_meta(&v, &mut self.stdout);
     }
 

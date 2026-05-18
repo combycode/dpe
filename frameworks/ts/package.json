@@ -1,6 +1,6 @@
 {
   "name": "@combycode/dpe-framework-ts",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "DPE framework for building streaming pipeline tools in TypeScript/Bun",
   "license": "AGPL-3.0-or-later",
   "repository": {

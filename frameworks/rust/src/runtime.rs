@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::accumulators::Memory;
 use crate::context::{Context, QueueItem};
 use crate::envelope;
+use crate::paths::EnvPaths;
 
 /// Processor function type.
 pub type ProcessorFn = fn(Value, &Value, &mut Context<'_>);
@@ -54,6 +55,8 @@ pub fn run(tool: Tool) {
     let accept_meta = settings.get("accept_meta")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    // Build EnvPaths once — resolves $token→abs on input, tokenizes abs→$token on output.
+    let paths = EnvPaths::from_env();
     let mut memory = Memory::new();
     let mut queue: Vec<QueueItem> = Vec::new();
 
@@ -96,6 +99,8 @@ pub fn run(tool: Tool) {
         let id = envelope.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let src = envelope.get("src").and_then(|v| v.as_str()).unwrap_or("").to_string();
         let v = envelope.get("v").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+        // Resolve $token paths in v before handing to processor.
+        let v = paths.resolve_value(v);
 
         // Emit an `input` event BEFORE the processor runs so the runner
         // can count rows_in for every stage that reads stdin — including
@@ -106,7 +111,7 @@ pub fn run(tool: Tool) {
         {
             let mut ctx = Context::new(
                 id.clone(), src.clone(), &mut memory, &mut queue,
-                &mut stdout_buf, &mut stderr_buf,
+                &mut stdout_buf, &mut stderr_buf, paths.clone(),
             );
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (tool.input_fn)(v.clone(), &settings, &mut ctx);
@@ -121,14 +126,14 @@ pub fn run(tool: Tool) {
         // Auto-drain
         if !queue.is_empty() {
             drain_queue(&mut queue, &tool.queue_fns, &settings, &mut memory,
-                        &mut stdout_buf, &mut stderr_buf);
+                        &mut stdout_buf, &mut stderr_buf, paths.clone());
         }
     }
 
     // Final drain after stdin EOF
     if !queue.is_empty() {
         drain_queue(&mut queue, &tool.queue_fns, &settings, &mut memory,
-                    &mut stdout_buf, &mut stderr_buf);
+                    &mut stdout_buf, &mut stderr_buf, paths);
     }
 }
 
@@ -140,6 +145,7 @@ pub fn drain_queue(
     memory: &mut Memory,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    paths: EnvPaths,
 ) {
     let max_iterations = 100_000;
     let mut iterations = 0;
@@ -160,7 +166,7 @@ pub fn drain_queue(
 
         let mut ctx = Context::new(
             item_id, item_src, memory, queue,
-            stdout, stderr,
+            stdout, stderr, paths.clone(),
         );
 
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

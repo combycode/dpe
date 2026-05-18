@@ -4,6 +4,7 @@ use combycode_dpe::prelude::*;
 use combycode_dpe::accumulators::Memory;
 use combycode_dpe::context::{Context, QueueItem};
 use combycode_dpe::envelope;
+use combycode_dpe::paths::EnvPaths;
 
 /// Test envelope parsing
 #[test]
@@ -53,7 +54,7 @@ fn context_output_writes_envelope() {
         let mut ctx = Context::new(
             "test-id".to_string(), "test-src".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.output(json!({"result": 42}), None, None);
     }
@@ -77,7 +78,7 @@ fn context_output_custom_id_src() {
         let mut ctx = Context::new(
             "orig-id".to_string(), "orig-src".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.output(json!({"x": 1}), Some("custom-id"), Some("custom-src"));
     }
@@ -99,7 +100,7 @@ fn context_emit_adds_to_queue() {
         let mut ctx = Context::new(
             "id1".to_string(), "src1".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.emit("process", json!({"data": "test"}), None, None);
     }
@@ -121,7 +122,7 @@ fn context_emit_custom_id() {
         let mut ctx = Context::new(
             "id1".to_string(), "src1".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.emit("q", json!({}), Some("new-id"), Some("new-src"));
     }
@@ -141,7 +142,7 @@ fn context_meta_writes_to_stdout() {
         let mut ctx = Context::new(
             "".to_string(), "".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.meta(json!({"rows": 100}));
     }
@@ -163,7 +164,7 @@ fn context_error_writes_to_stderr() {
         let mut ctx = Context::new(
             "err-id".to_string(), "err-src".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.error(&json!({"bad": true}), "something failed");
     }
@@ -187,7 +188,7 @@ fn context_log_writes_to_stderr() {
         let mut ctx = Context::new(
             "".to_string(), "".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.log("test message", "info");
     }
@@ -209,7 +210,7 @@ fn context_hash() {
     let ctx = Context::new(
         "".to_string(), "".to_string(),
         &mut memory, &mut queue,
-        &mut stdout_buf, &mut stderr_buf,
+        &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
     );
 
     let h1 = ctx.hash("test:path");
@@ -234,7 +235,7 @@ fn memory_shared_across_contexts() {
         let mut ctx = Context::new(
             "".to_string(), "".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         ctx.memory.number("count", 0.0).inc(5.0);
     }
@@ -244,8 +245,73 @@ fn memory_shared_across_contexts() {
         let ctx = Context::new(
             "".to_string(), "".to_string(),
             &mut memory, &mut queue,
-            &mut stdout_buf, &mut stderr_buf,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
         );
         assert_eq!(ctx.memory.get_number("count").unwrap().value(), 5.0);
     }
+}
+
+/// Token round-trip: absolute paths in v are tokenized back to $token form on output.
+#[test]
+fn context_output_tokenizes_paths() {
+    let paths = EnvPaths::from_pairs(&[("input", "/data/in"), ("output", "/data/out")]);
+    let mut memory = Memory::new();
+    let mut queue: Vec<QueueItem> = Vec::new();
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let mut stderr_buf: Vec<u8> = Vec::new();
+
+    {
+        let mut ctx = Context::new(
+            "id1".to_string(), "s1".to_string(),
+            &mut memory, &mut queue,
+            &mut stdout_buf, &mut stderr_buf, paths.clone(),
+        );
+        // Processor emits absolute paths — context must tokenize them.
+        ctx.output(json!({
+            "src": "/data/in/file.csv",
+            "dst": "/data/out/result.csv",
+            "n":   42
+        }), None, None);
+    }
+
+    let output = String::from_utf8(stdout_buf).unwrap();
+    let parsed: Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(parsed["v"]["src"], "$input/file.csv");
+    assert_eq!(parsed["v"]["dst"], "$output/result.csv");
+    assert_eq!(parsed["v"]["n"],   42);
+}
+
+/// Token round-trip on meta: paths tokenized the same way.
+#[test]
+fn context_meta_tokenizes_paths() {
+    let paths = EnvPaths::from_pairs(&[("storage", "/data/store")]);
+    let mut memory = Memory::new();
+    let mut queue: Vec<QueueItem> = Vec::new();
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let mut stderr_buf: Vec<u8> = Vec::new();
+
+    {
+        let mut ctx = Context::new(
+            "".to_string(), "".to_string(),
+            &mut memory, &mut queue,
+            &mut stdout_buf, &mut stderr_buf, paths.clone(),
+        );
+        ctx.meta(json!({ "cache_dir": "/data/store/my-ns" }));
+    }
+
+    let output = String::from_utf8(stdout_buf).unwrap();
+    let parsed: Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(parsed["v"]["cache_dir"], "$storage/my-ns");
+}
+
+/// Resolve on input: $token paths in envelope v are expanded before processor sees them.
+#[test]
+fn runtime_resolve_passes_expanded_paths_to_processor() {
+    // We can't call run() without stdin, but we can test resolve_value directly
+    // through the paths module, which is what runtime applies.
+    let paths = EnvPaths::from_pairs(&[("input", "/mnt/drive")]);
+    let v = json!({ "path": "$input/data.csv", "extra": 99 });
+    let resolved = paths.resolve_value(v);
+    assert_eq!(resolved["path"],  "/mnt/drive/data.csv");
+    assert_eq!(resolved["extra"], 99);
 }

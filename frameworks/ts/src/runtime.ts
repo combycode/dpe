@@ -9,6 +9,7 @@
 import { Context, Memory, type QueueItem, type RuntimeLike } from './context';
 import type { DataEnvelope, JSONValue } from './envelope';
 import { parseEnvelope, writeInput, writeLog } from './envelope';
+import { EnvPaths } from './paths';
 
 export type Processor = (v: JSONValue, settings: JSONValue, ctx: Context) => void | Promise<void>;
 
@@ -33,6 +34,7 @@ class Runtime implements RuntimeLike {
   private queue: QueueItem[] = [];
   private shutdown = false;
   private drainLimit = 100_000;
+  private paths = new EnvPaths();
 
   enqueue(item: QueueItem): void {
     this.queue.push(item);
@@ -47,7 +49,7 @@ class Runtime implements RuntimeLike {
         writeLog(`No processor for queue '${item.queue}', dropping item`, 'warn');
         continue;
       }
-      const ctx = new Context(item.id, item.src, this.memory, this);
+      const ctx = new Context(item.id, item.src, this.memory, this, this.paths);
       try {
         await proc(item.v, this.settings, ctx);
       } catch (e) {
@@ -98,9 +100,11 @@ class Runtime implements RuntimeLike {
       // can count rows_in for every stage that reads stdin — including
       // pass-through tools and terminal sinks that never call ctx.output().
       writeInput(d.id ?? '', d.src ?? '');
-      const ctx = new Context(d.id ?? '', d.src ?? '', this.memory, this);
+      // Resolve $token paths in v before handing to processor.
+      const resolvedV = this.paths.resolveValue(d.v);
+      const ctx = new Context(d.id ?? '', d.src ?? '', this.memory, this, this.paths);
       try {
-        await this.input(d.v, this.settings, ctx);
+        await this.input(resolvedV, this.settings, ctx);
       } catch (e) {
         ctx.error(d.v, e);
       }

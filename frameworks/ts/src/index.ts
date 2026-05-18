@@ -25,5 +25,6 @@ export {
   writeLog,
   writeMeta,
 } from './envelope';
+export { EnvPaths } from './paths';
 export type { Processor, RunOptions } from './runtime';
 export { run } from './runtime';

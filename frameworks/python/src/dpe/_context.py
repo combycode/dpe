@@ -15,6 +15,7 @@ from dpe._envelope import (
     write_stats,
     write_trace,
 )
+from dpe._paths import EnvPaths
 
 T = TypeVar("T")
 
@@ -27,13 +28,15 @@ class Context:
     Memory is shared across all processors in the tool.
     """
 
-    __slots__ = ("id", "src", "memory", "_runtime", "_labels")
+    __slots__ = ("id", "src", "memory", "_runtime", "_paths", "_labels")
 
-    def __init__(self, id: str, src: str, memory: Memory, runtime):
+    def __init__(self, id: str, src: str, memory: Memory, runtime,
+                 paths: EnvPaths | None = None):
         self.id = id
         self.src = src
         self.memory = memory
         self._runtime = runtime
+        self._paths = paths if paths is not None else EnvPaths()
         # Labels accumulated by ctx.trace(k, v). Flushed as one merged
         # {type:"trace"} stderr event before each ctx.output(), then cleared.
         self._labels: dict = {}
@@ -57,15 +60,16 @@ class Context:
         """Emit data record to stdout.
 
         Flushes accumulated trace labels as a merged trace event first
-        (channel="data" → counts as rows_out at the runner), then writes
+        (channel="data" -> counts as rows_out at the runner), then writes
         the envelope, then clears the label bag.
+        Absolute paths in v are reverse-tokenized to $token/... form.
         """
         out_id = id if id is not None else self.id
         out_src = src if src is not None else self.src
-        # Emit trace even with empty labels — the chain row itself is the value.
+        # Emit trace even with empty labels -- the chain row itself is the value.
         write_trace(out_id, out_src, self._labels, channel="data")
         self._labels = {}
-        write_data(v, out_id, out_src)
+        write_data(self._paths.tokenize_value(v), out_id, out_src)
 
     def emit(self, queue: str, v, *, id: str | None = None, src: str | None = None):
         """Emit to internal named queue. Processed by process_<queue>().
@@ -93,10 +97,10 @@ class Context:
 
         Also emits a {type:"trace", channel:"meta"} stderr event so the
         runner can increment its per-stage `meta` counter. Inherits
-        ctx id/src.
+        ctx id/src. Absolute paths in v are reverse-tokenized to $token/... form.
         """
         write_trace(self.id, self.src, {}, channel="meta")
-        write_meta(v)
+        write_meta(self._paths.tokenize_value(v))
 
     def log(self, msg: str, *, level: str = "info", **extra):
         """Write structured log to stderr."""

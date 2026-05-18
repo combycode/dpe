@@ -36,6 +36,7 @@ from dpe._accumulators import (
 )
 from dpe._context import Context
 from dpe._envelope import hash_file, hash_string
+from dpe._paths import EnvPaths
 from dpe._runtime import Runtime
 
 
@@ -63,6 +64,7 @@ __all__ = [
     "hash_string",
     "hash_file",
     "Context",
+    "EnvPaths",
     "Memory",
     "Number",
     "Average",
