@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+## [2.0.3] — 2026-06-16
+
+Patch release — three additive fixes against intermittent silent data loss / mis-routing. No breaking changes; every existing pipeline keeps its current behaviour modulo the bug paths described below.
+
+### Fixed
+
+- **`route` builtin: `OnError::Drop` now continues to the next rule** instead of returning `None`. The previous behaviour swallowed envelopes whose first rule errored on a missing field, defeating any catch-all `"true"` pattern. With this fix, a missing-field error on rule A lets rule B (or a later catch-all) still claim the envelope; `OnError::Fail` semantics unchanged. Inbox 0044 closeout. Tests: `dag_route_drop_continues_to_catchall_on_missing_field` + `dag_route_drop_with_no_catchall_still_drops` in `runner/tests/e2e_dag.rs`.
+- **`env_interp`: nested fallback `${VAR:-${INNER}}` parses correctly.** Previously the closing `}` was found by a flat first-`}`-wins scan, which silently truncated any default clause containing a nested `${...}`. New `find_closing_brace` helper tracks brace depth; the default clause is recursively interpolated so chains like `${A:-${B:-${C}}}` resolve through. Errors at the terminal-unset case name the inner variable, not the outer. Five unit tests in `runner/src/env_interp.rs` cover nested-resolve, outer-overrides, deeply-nested chain, terminal-unset, and unbalanced-brace.
+- **`frameworks/ts`: explicit stdout drain on `run()` exit** — `process.stdout.write('', cb)` + 50ms `setTimeout` before `run()` returns. Workaround for a Bun-on-Windows behaviour where the JS-level stdout buffer can be lost when the process exits within milliseconds of the last `ctx.output()`. Reproduced at ~30% rate in the finalyst `recon-extract-col-meta → recon-normalize-cols` hand-off (inbox 0045); fixed at 0/30 with this change. The bare callback alone was insufficient (~20% rate persisted); the 50ms grace is what truly settles the OS pipe. Tax: 50ms per tool exit, ~600ms per finalyst convert run (~1% of LLM-bound wall-clock). Same family as the inbox 0041 (main()-must-await-run) Bun-on-Windows class of issues.
+
 ## [2.0.2] — 2026-05-19
 
 Feature release — adds a per-stage snapshot test runner (`dpe test` / `dpe coverage`), a `$path` resolver across all three SDKs, and broader observability + ergonomics improvements around stages, settings, and tools. No breaking changes to existing pipelines.
