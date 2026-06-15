@@ -376,6 +376,118 @@ stages:
         "zfall (catch-all) gets only what txt didn't claim");
 }
 
+// ─── route Drop-on-error: catch-all matches when earlier rule errors ───
+// Regression for issue 0044: when the first rule's expression throws on a
+// missing field, OnError::Drop must continue to the next rule (the
+// catch-all `"true"`) instead of swallowing the envelope.
+
+#[tokio::test]
+async fn dag_route_drop_continues_to_catchall_on_missing_field() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  router:
+    tool: route
+    routes:
+      flagged: "v.flag == true"
+      catch:   "true"
+    on_error: drop
+    input: src
+  flagged-sink:
+    tool: mock-tool
+    settings: { tag: flagged }
+    input: router.flagged
+  catch-sink:
+    tool: mock-tool
+    settings: { tag: catch }
+    input: router.catch
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    // Two envelopes WITHOUT v.flag. First rule errors on missing field;
+    // catch-all must still claim them. Plus one envelope WITH v.flag=true
+    // as a positive control (flagged sink should get it).
+    let input = br#"{"t":"d","id":"a","src":"s","v":{"name":"alpha"}}
+{"t":"d","id":"b","src":"s","v":{"name":"bravo"}}
+{"t":"d","id":"c","src":"s","v":{"flag":true,"name":"charlie"}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let flagged = parse_lines(report.terminal_output.get("flagged-sink").expect("flagged sink"));
+    let catch   = parse_lines(report.terminal_output.get("catch-sink").expect("catch sink"));
+
+    let flagged_names: Vec<String> = flagged.iter()
+        .filter_map(|l| l["v"]["name"].as_str().map(String::from)).collect();
+    let catch_names: Vec<String> = catch.iter()
+        .filter_map(|l| l["v"]["name"].as_str().map(String::from)).collect();
+
+    assert_eq!(flagged_names, vec!["charlie"],
+        "only the v.flag=true envelope reaches flagged");
+    assert_eq!(catch_names, vec!["alpha", "bravo"],
+        "envelopes whose first rule errored on missing field must fall through to catch-all (issue 0044)");
+}
+
+#[tokio::test]
+async fn dag_route_drop_with_no_catchall_still_drops() {
+    // Drop continues past the errored rule, but if no later rule matches,
+    // the envelope IS dropped (no catch-all to claim it). Confirms we
+    // didn't break the no-catch-all case while fixing 0044.
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    settings: { tag: src }
+    input: $input
+  router:
+    tool: route
+    routes:
+      flagged:   "v.flag == true"
+      specific:  "v.name == 'wont-match'"
+    on_error: drop
+    input: src
+  flagged-sink:
+    tool: mock-tool
+    settings: { tag: flagged }
+    input: router.flagged
+  specific-sink:
+    tool: mock-tool
+    settings: { tag: specific }
+    input: router.specific
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let cfg = RunnerConfig::default();
+
+    let input = br#"{"t":"d","id":"a","src":"s","v":{"name":"alpha"}}
+"#.to_vec();
+
+    let report = run_variant(
+        &v, tmp.path(), &ctx, &cfg,
+        InputSource::Bytes(input),
+        OutputSink::Memory,
+    ).await.unwrap();
+
+    let flagged = parse_lines(report.terminal_output.get("flagged-sink").expect("flagged sink"));
+    let specific = parse_lines(report.terminal_output.get("specific-sink").expect("specific sink"));
+
+    assert!(flagged.is_empty(), "no envelope matches flagged (rule errored)");
+    assert!(specific.is_empty(), "no envelope matches specific either");
+}
+
 // ─── fan-in: two sibling $input leaves merge into one sink ────────────
 
 #[tokio::test]

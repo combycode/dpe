@@ -161,11 +161,15 @@ where R: AsyncRead + Unpin,
 }
 
 /// Pick the first channel whose expression evaluates truthy.
-///   - runtime error & on_error=Drop → None, row counted as dropped
-///   - runtime error & on_error=Pass → None, caller forwards to all (not
-///     implemented yet — treated like Drop)
-///   - runtime error & on_error=Fail → None, caller may treat as fatal
-///     (we log via stats.rows_errored; fatal escalation is caller's job)
+///
+/// Error handling per `on_error`:
+///   - Drop → row error is counted in stats; CONTINUE evaluation so a
+///     later catch-all rule (e.g. `"true"`) can still match. Returning
+///     None here would have swallowed envelopes whose first rule errored
+///     on a missing field, defeating the catch-all pattern. (Issue 0044 fix.)
+///   - Pass → same continue semantics — try the next channel.
+///   - Fail → return None immediately; caller may treat as fatal
+///     (we log via stats.rows_errored; fatal escalation is caller's job).
 fn find_channel(
     routes: &[(String, Expr)],
     scope: &Scope,
@@ -180,9 +184,9 @@ fn find_channel(
             Err(_) => {
                 stats.rows_errored += 1;
                 match on_error {
-                    OnError::Drop => return None,
-                    OnError::Fail => return None, // caller can check stats
+                    OnError::Drop => continue,    // try next channel — catch-all may match
                     OnError::Pass => continue,    // try next channel
+                    OnError::Fail => return None, // caller can check stats
                 }
             }
         }
