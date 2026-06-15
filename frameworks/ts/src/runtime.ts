@@ -114,6 +114,19 @@ class Runtime implements RuntimeLike {
 
     if (this.queue.length > 0) await this.drainQueue();
     if (opts.onShutdown) await opts.onShutdown();
+
+    // Workaround for Bun's exit-time stdout race that drops tail-end
+    // envelopes when ctx.output runs back-to-back milliseconds before
+    // stdin EOF. The bare `process.stdout.write('', cb)` callback fires
+    // before the OS pipe actually settles (observed: callback alone
+    // reduced the bug from ~30% to ~20%; adding a 50ms grace eliminates
+    // it). Issue 0045 — recon-extract-col-meta → recon-normalize-cols
+    // hand-off losing 1 of N envelopes. Same family as inbox 0041.
+    await new Promise<void>(resolve => {
+      process.stdout.write('', () => {
+        setTimeout(resolve, 50);
+      });
+    });
   }
 }
 
