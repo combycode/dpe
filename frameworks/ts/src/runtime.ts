@@ -122,7 +122,7 @@ class Runtime implements RuntimeLike {
     // reduced the bug from ~30% to ~20%; adding a 50ms grace eliminates
     // it). Issue 0045 — recon-extract-col-meta → recon-normalize-cols
     // hand-off losing 1 of N envelopes. Same family as inbox 0041.
-    await new Promise<void>(resolve => {
+    await new Promise<void>((resolve) => {
       process.stdout.write('', () => {
         setTimeout(resolve, 50);
       });
