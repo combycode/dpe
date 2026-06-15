@@ -132,9 +132,13 @@ pub fn interpolate_string(
         // Push everything before ${ verbatim.
         out.push_str(&rest[..idx]);
 
-        // Find the closing brace.
-        let close = match rest[idx + 2..].find('}') {
-            Some(j) => idx + 2 + j,
+        // Find the matching closing brace using depth tracking, so
+        // ${A:-${B}} parses as A with default "${B}" — not as A with
+        // default "${B" terminated at the first inner '}'. (Pre-v2.0.3
+        // behavior was the latter, which silently corrupted any
+        // ${VAR:-${OTHER}.suffix}-style fallback.)
+        let close = match find_closing_brace(rest, idx) {
+            Some(c) => c,
             None => return Err(EnvInterpError::Malformed {
                 raw: s.to_string(),
                 reason: "unclosed '${' — missing '}'".into(),
@@ -161,9 +165,12 @@ pub fn interpolate_string(
         }
 
         let resolved = match env.get(name) {
-            Some(v) => v,
+            Some(v) => v.to_string(),
             None => match default {
-                Some(d) => d.to_string(),
+                // Recursively interpolate the default so ${A:-${B}} works
+                // and nested fallbacks chain correctly. Error messages
+                // refer to the inner var that ultimately couldn't resolve.
+                Some(d) => interpolate_string(d, env)?,
                 None => return Err(EnvInterpError::Missing {
                     name: name.to_string(),
                     raw:  s.to_string(),
@@ -176,6 +183,35 @@ pub fn interpolate_string(
     }
 
     Ok(out)
+}
+
+/// Find the closing `}` that matches the `${` at `start` in `rest`, tracking
+/// nested `${...}` depth. Returns the byte index of the outer `}` in `rest`,
+/// or None if the input is unbalanced. A backslash-escaped `\${` does NOT
+/// open a new depth level (matches the top-level escape rule).
+fn find_closing_brace(rest: &str, start: usize) -> Option<usize> {
+    let bytes = rest.as_bytes();
+    let mut depth: usize = 1;          // we've just consumed the outer ${
+    let mut i = start + 2;
+    while i < bytes.len() {
+        // Detect an inner ${ (escaped or not).
+        if i + 1 < bytes.len() && bytes[i] == b'$' && bytes[i + 1] == b'{' {
+            let is_escaped = i > 0 && bytes[i - 1] == b'\\';
+            if !is_escaped {
+                depth += 1;
+            }
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -440,6 +476,65 @@ mod tests {
         let v = json!({ "$set": { "field": "value" } });
         let r = interpolate_in_value(&v, &env).unwrap();
         assert_eq!(r, v);
+    }
+
+    // ─── Nested fallback (v2.0.3 fix) ────────────────────────────────
+    // Default-clause of ${VAR:-...} is itself interpolated, with brace
+    // depth tracked so nested ${...} parses correctly.
+
+    #[test]
+    fn nested_default_resolves_inner_var() {
+        // OUT_FILE unset → use default which itself references BATCH.
+        let env = env_with(&[("BATCH", "10")]);
+        assert_eq!(
+            interpolate_string("${OUT_FILE:-files_batch_${BATCH}.txt}", &env).unwrap(),
+            "files_batch_10.txt",
+        );
+    }
+
+    #[test]
+    fn nested_default_overridden_by_outer() {
+        // When the outer var IS set, default is ignored entirely (no
+        // recursion happens — confirms we don't over-interpolate).
+        let env = env_with(&[("OUT_FILE", "explicit.txt"), ("BATCH", "10")]);
+        assert_eq!(
+            interpolate_string("${OUT_FILE:-files_batch_${BATCH}.txt}", &env).unwrap(),
+            "explicit.txt",
+        );
+    }
+
+    #[test]
+    fn deeply_nested_fallback_chain() {
+        // ${A:-${B:-${C}}} — only C is set, so the chain cascades down.
+        let env = env_with(&[("C", "third")]);
+        assert_eq!(
+            interpolate_string("${A:-${B:-${C}}}", &env).unwrap(),
+            "third",
+        );
+    }
+
+    #[test]
+    fn nested_unset_at_terminal_errors() {
+        // ${A:-${B}} with neither set: error names the terminal var (B)
+        // since A's default DID resolve to a sub-interpolation that failed.
+        let env = env_with(&[]);
+        match interpolate_string("${A:-${B}}", &env) {
+            Err(EnvInterpError::Missing { name, .. }) => assert_eq!(name, "B"),
+            other => panic!("expected Missing(B), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unbalanced_nested_brace_errors() {
+        // ${A:-${B} — outer brace never closes; must report Malformed,
+        // not silently truncate at the inner }.
+        let env = env_with(&[("B", "x")]);
+        match interpolate_string("${A:-${B}", &env) {
+            Err(EnvInterpError::Malformed { reason, .. }) => {
+                assert!(reason.contains("unclosed"), "got reason: {}", reason);
+            }
+            other => panic!("expected Malformed, got {:?}", other),
+        }
     }
 
     // ─── ProcessEnv smoke ───────────────────────────────────────────
