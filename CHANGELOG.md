@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+## [2.0.4] — 2026-07-05
+
+Docs / metadata patch — no runtime changes. Publishes exclusively to fix
+registry-side metadata that shipped incorrectly in 2.0.0-2.0.3.
+
+### Fixed
+
+- **Registry `repository` URL** in `frameworks/rust/Cargo.toml` and `frameworks/python/pyproject.toml` pointed at phantom repos (`combycode/dpe-framework-rust`, `combycode/dpe-framework-python`). Both now point at the actual monorepo `combycode/dpe`.
+- **Python: `readme = "README.md"`** added to `pyproject.toml`. PyPI now renders the framework docs (was previously empty because Hatchling doesn't auto-detect README the way Cargo does).
+- **Rust: added `homepage`, `documentation = "https://docs.rs/combycode-dpe"`, `readme`** fields — crates.io page now links out correctly.
+- **Standalone `combycode-dpe-tool-*` crates** (normalize, read-file-stream, write-file-stream, write-file-stream-hashed) — same `repository` / `homepage` / `documentation` cleanup.
+- **Public docs**: removed mentions of the `dpe-tools` companion monorepo from standalone dpe docs — custom tools were being wrongly advertised as if they shipped bundled with the runner. Per-tool doc headers (`checkpoint`, `gate`, `normalize`, `read-file-stream`, `scan-fs`, `write-file-stream`) updated to point at their monorepo path rather than phantom `dpe-tool-<name>` repos.
+
 ## [2.0.3] — 2026-06-16
 
 Patch release — three additive fixes against intermittent silent data loss / mis-routing. No breaking changes; every existing pipeline keeps its current behaviour modulo the bug paths described below.
