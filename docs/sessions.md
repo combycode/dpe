@@ -32,7 +32,7 @@ Written once at startup. Flat map of `stage_id → { tool, replicas, input, rout
   "scan":   { "tool": "scan-fs",        "replicas": 1, "input": ["$input"] },
   "router": { "tool": "route",          "replicas": 1, "input": ["keep"],
               "routes": {"short": "v.word_count < 3", "long": "v.word_count >= 3"} },
-  "workers":{ "tool": "doc-converter",  "replicas": 3, "input": ["prep"] }
+  "workers":{ "tool": "normalize",      "replicas": 3, "input": ["prep"] }
 }
 ```
 

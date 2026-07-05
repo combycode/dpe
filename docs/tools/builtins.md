@@ -316,29 +316,29 @@ Meta envelopes (`t: "m"`) are forwarded unchanged — group-by only groups data 
 
 All state lives in memory as `HashMap<group_key, {buckets: Map, last_id, last_src}>`. Trigger-evict minimises footprint; stalled groups only accumulate until their trigger fires or EOF.
 
-**For large joins that span days / files / sessions, use MongoDB (`mongo-upsert`) instead** — group-by is intended for one-run assembly.
+**For large joins that span days / files / sessions, use an external store (e.g. a custom upsert tool that writes to a DB) instead** — group-by is intended for one-run assembly.
 
-### Worked example: merge original-currency + converted-currency per day
+### Worked example: merge two sources per day-key
 
 ```yaml
-pipeline: recon
-variant: merge-ccy
+pipeline: merge-sources
+variant: main
 stages:
-  read-tables:      { tool: read-tables, settings: {...}, input: $input }
-  tag-source:       { tool: classify,    settings: {...}, input: read-tables }
+  read:             { tool: read-file-stream, settings: {...}, input: $input }
+  tag-source:       { tool: normalize,        settings: {...}, input: read }
   merge:
     tool: group-by
     group_by:
       key:              "v.day"
       bucket_key_from:  "v.source"
       value_from:       "v.row"
-      target:           "v.ccy"
-      expected_sources: ["TRY", "EUR"]
+      target:           "v.merged"
+      expected_sources: ["A", "B"]
     input: tag-source
   write: { tool: write-file-stream, settings: {...}, input: merge }
 ```
 
-Input rows with `v.source` equal to `"TRY"` or `"EUR"` get merged into one document per `day` with `v.ccy.TRY` + `v.ccy.EUR` sub-documents.
+Input rows with `v.source` equal to `"A"` or `"B"` get merged into one document per `day` with `v.merged.A` + `v.merged.B` sub-documents.
 
 ---
 
@@ -349,39 +349,39 @@ Pure topology fan-out — no settings, no expressions, no channels. The DAG prim
 
 ### When to use it
 
-`route` picks ONE channel per envelope (first-truthy-wins). When you need the **same** envelope to reach multiple downstream stages — e.g. one branch sinks every classified row to a per-type ndjson while another filters the same stream for a batch summary — that's `spread`.
+`route` picks ONE channel per envelope (first-truthy-wins). When you need the **same** envelope to reach multiple downstream stages — e.g. one branch sinks every tagged row to a per-type ndjson while another filters the same stream for a batch summary — that's `spread`.
 
 ```yaml
-classify:
-  tool: classify
-  settings: { ... }
+tag:
+  tool: normalize
+  settings: { ... }                  # produces v.tag + v.batch fields
   input: $input
 
-# Broadcast classified envelopes to every consumer:
-fan-classified:
+# Broadcast tagged envelopes to every consumer:
+fan-tagged:
   tool: spread
-  input: classify
+  input: tag
 
-# Each consumer receives the FULL classified stream:
+# Each consumer receives the FULL tagged stream:
 sink-per-type:
   tool: route
   routes:
-    contracts: "v.class.category == 'CONTRACT'"
-    other: "true"
-  input: fan-classified
+    kind-a: "v.tag == 'A'"
+    other:  "true"
+  input: fan-tagged
 
 filter-batch:
   tool: filter
-  expression: "v.class.data.batch == ${BATCH}"
-  input: fan-classified
+  expression: "v.batch == ${BATCH}"
+  input: fan-tagged
 
 write-summary:
   tool: write-file-stream
-  settings: { default_file: "$output/all-classified.ndjson", format: ndjson }
-  input: fan-classified
+  settings: { default_file: "$output/all-tagged.ndjson", format: ndjson }
+  input: fan-tagged
 ```
 
-In this graph, every envelope from `classify` flows to ALL THREE downstream stages — `sink-per-type`, `filter-batch`, `write-summary`. Without `spread`, the runner would reject the multi-consumer DAG.
+In this graph, every envelope from `tag` flows to ALL THREE downstream stages — `sink-per-type`, `filter-batch`, `write-summary`. Without `spread`, the runner would reject the multi-consumer DAG.
 
 ### Settings
 

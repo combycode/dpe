@@ -4,7 +4,10 @@ version = "2.0.3"
 edition = "2021"
 description = "DPE framework for building streaming pipeline tools in Rust"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/combycode/dpe-framework-rust"
+repository = "https://github.com/combycode/dpe"
+homepage = "https://github.com/combycode/dpe"
+documentation = "https://docs.rs/combycode-dpe"
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -2,7 +2,7 @@
 
 Append envelopes to files on disk. LRU-bounded open-handle pool, periodic flush, optional mkdir. Handles many-files-at-once workloads without exhausting file descriptors.
 
-Repo: `dpe-tool-writefile` (Rust). Tool name: `write-file-stream`.
+Lives in `tools/write-file-stream/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust). Tool name: `write-file-stream`.
 
 ## Input
 
@@ -67,11 +67,11 @@ Upstream envelopes end up in `$output/all.ndjson`, one JSON per line (just the `
 
 ```yaml
 stages:
-  classify: { tool: ..., input: $input }      # adds v.category
+  tag:     { tool: ..., input: $input }       # adds v.category
   addfile:
     tool: enrich-metadata
     settings: { meta: {} }                    # placeholder — a real tool would set v.file
-    input: classify
+    input: tag
   sink:
     tool: write-file-stream
     settings:

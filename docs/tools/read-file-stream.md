@@ -2,7 +2,7 @@
 
 Stream rows from a text file. One input envelope per file → one output envelope per row.
 
-Repo: `dpe-tool-readfile` (Rust). Tool name: `read-file-stream`.
+Lives in `tools/read-file-stream/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust). Tool name: `read-file-stream`.
 
 ## Input
 
@@ -37,24 +37,24 @@ When `true`, every field on the input envelope's `v` is copied onto every emitte
 | Input v has `category: "items"` (no collision) | Carried through verbatim. |
 | Input v has `path: "/tmp/x.ndjson"` (input only) | Carried through to the emitted v (in addition to `file`). |
 
-Use this to carry classification / metadata from upstream (e.g. `label`, `stream_id`, `category` attached by `read-tables` or `classify`) onto every row without a downstream `normalize` merge step.
+Use this to carry classification / metadata from upstream (e.g. `label`, `stream_id`, `category` attached by an earlier `normalize` or custom tagger) onto every row without a downstream `normalize` merge step.
 
 ```yaml
-# Recon row expansion: feed table envelopes through read-file-stream
-# so each row in the saved NDJSON inherits the table's reclassified
-# label / stream_id at the top level.
-recon-set-row-path:
+# Row expansion: feed envelopes carrying labels through read-file-stream
+# so each row in the saved NDJSON inherits the upstream label /
+# stream_id at the top level.
+set-row-path:
   tool: normalize
   settings:
     rules: [{ op: rename, map: { target: path } }]
-  input: reclassify-recon-tables
+  input: upstream-tagged
 
-recon-read-rows:
+read-rows:
   tool: read-file-stream
   settings:
     format: ndjson
     passthrough_input: true
-  input: recon-set-row-path
+  input: set-row-path
 ```
 
 ## Output

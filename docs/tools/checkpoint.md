@@ -5,7 +5,7 @@ Two distinct uses, same tool:
 1. **Gated barrier** — buffer stdin to disk, release to stdout only after every gate in `wait_for_gates[]` reports `predicate_met: true`. Pair with `gate` to hold a downstream branch until an upstream phase finishes.
 2. **Drain barrier** — set `wait_for_gates: []` (or omit it). Buffers everything to disk, then releases as one burst the moment upstream EOFs. Useful as a barrier-then-replay primitive on its own — no `gate` stage needed.
 
-Repo: `dpe-tool-checkpoint` (Rust). Tool name: `checkpoint`.
+Lives in `tools/checkpoint/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust). Tool name: `checkpoint`.
 
 ## Flow
 

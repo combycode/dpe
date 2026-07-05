@@ -97,6 +97,8 @@ tool is wired into a pipeline — see `docs/testing.md`.
 
 ## Repo & licence
 
-- Source: <https://github.com/combycode/dpe-framework-ts>
-- Monorepo (canonical): <https://github.com/combycode/dpe>
+- Source: <https://github.com/combycode/dpe/tree/main/frameworks/ts>
+- Monorepo: <https://github.com/combycode/dpe>
+- Issues: <https://github.com/combycode/dpe/issues>
+- Changelog: <https://github.com/combycode/dpe/blob/main/CHANGELOG.md>
 - Licence: AGPL-3.0-or-later

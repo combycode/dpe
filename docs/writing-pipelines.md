@@ -193,19 +193,19 @@ Use this for writes-before-read coordination (e.g., `spread` → write-sink AND 
 ```yaml
 stages:
   src:   { tool: X, input: $input }
-  contracts-gate:
+  slow-branch-gate:
     tool: toggle
     input: src
     settings:
-      env: SKIP_CONTRACTS           # env var to check
+      env: SKIP_SLOW                # env var to check
       value: "1"                    # OR values: ["1","yes","true"]
       mode: off                     # default "on"
-  contracts-pipeline:
-    tool: contract-doc-converter
-    input: contracts-gate
+  slow-branch:
+    tool: my-heavy-tool
+    input: slow-branch-gate
 ```
 
-Run `SKIP_CONTRACTS=1 dpe run :main ...` → the gate's resolved action is `drop`, downstream of `contracts-gate` sees zero envelopes. Without the env var, action is `pass` and the branch runs normally.
+Run `SKIP_SLOW=1 dpe run :main ...` → the gate's resolved action is `drop`, downstream of `slow-branch-gate` sees zero envelopes. Without the env var, action is `pass` and the branch runs normally.
 
 Decision is taken once at plan-compile time, so per-envelope cost is byte-copy or constant-time skip. `dpe check --plan` shows the resolved action in the plan JSON. Use this to turn whole branches on/off per run instead of copying the variant.
 
@@ -232,7 +232,7 @@ pipeline: my-pipeline
 variant: base
 stages:
   scan:   { tool: scan-fs,          input: $input }
-  parse:  { tool: doc-converter,    input: scan, settings: { provider: google, model: gemini-3-flash-preview } }
+  parse:  { tool: my-parser,        input: scan, settings: { mode: "fast" } }
   write:  { tool: write-file-stream, input: parse }
 ```
 

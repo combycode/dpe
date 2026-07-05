@@ -4,7 +4,9 @@ version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- stream rows from text files (NDJSON / lines / CSV)"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/combycode/dpe-tool-readfile"
+repository = "https://github.com/combycode/dpe"
+homepage = "https://github.com/combycode/dpe"
+documentation = "https://github.com/combycode/dpe/blob/main/docs/tools/read-file-stream.md"
 
 [dependencies]
 combycode-dpe = { path = "../../frameworks/rust" }

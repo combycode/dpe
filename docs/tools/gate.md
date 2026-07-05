@@ -2,7 +2,7 @@
 
 Stateful pass-through that publishes progress to disk. Upstream sees no change; a JSON state file is updated periodically in `$session/gates/<name>.json`. Downstream tools (and the monitor TUI) read gate files to decide when they're safe to release / report done.
 
-Repo: `dpe-tool-gate` (Rust). Tool name: `gate`.
+Lives in `tools/gate/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust). Tool name: `gate`.
 
 ## Behavior
 

@@ -4,7 +4,9 @@ version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- append-only stream writer with hash-based deduplication"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/combycode/dpe-tool-writefile-hashed"
+repository = "https://github.com/combycode/dpe"
+homepage = "https://github.com/combycode/dpe"
+documentation = "https://github.com/combycode/dpe/blob/main/docs/tools/write-file-stream.md"
 
 [dependencies]
 combycode-dpe = { path = "../../frameworks/rust" }

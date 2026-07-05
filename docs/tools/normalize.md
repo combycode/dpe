@@ -2,7 +2,7 @@
 
 Row-level universal normaliser. Applies a declarative **rulebook** of ops against each envelope: dictionary replacement, type coercion, header renaming, shape transforms, dynamic path templating, require-field guards. Supports **profile dispatch** so different envelope types get different rulebooks in one stage.
 
-Repo: `dpe-tool-normalize/` (Rust). Tool name: `normalize`.
+Lives in `tools/normalize/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust). Tool name: `normalize`.
 
 ## When to use
 
@@ -261,4 +261,4 @@ Same stage, zero route splitting, different rulebooks per envelope type.
 
 ## Full reference
 
-The full set of operations and settings shapes is exercised by **432 unit tests** in the crate. See `dpe-tool-normalize/src/` — each op module is self-contained and tested.
+The full set of operations and settings shapes is exercised by **432 unit tests** in the crate. See `tools/normalize/src/` in the monorepo — each op module is self-contained and tested.

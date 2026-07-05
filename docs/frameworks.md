@@ -238,16 +238,16 @@ keeping the rest of the pipeline cached:
 
 ```yaml
 stages:
-  classify:                          # uses session cache (default `use`)
-    tool: classify
+  read:                              # uses session cache (default `use`)
+    tool: read-file-stream
     settings: { ... }
     input: $input
 
-  doc-converter:
-    tool: doc-converter
+  parse:
+    tool: my-parser                  # custom user tool that calls ctx.cached
     cache: "off"                     # ← skip cache for this stage only
     settings: { ... }
-    input: classify
+    input: read
 ```
 
 Values: `use` (default — read+write), `refresh` (always produce, overwrite),

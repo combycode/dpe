@@ -2,7 +2,7 @@
 
 Walk a directory tree and emit one envelope per matching file or directory. Optional content hashing. `diff` mode for change detection against a prior run's output.
 
-Repo: `dpe-tool-scan-fs` (Rust).
+Lives in `tools/scan-fs/` in the [combycode/dpe](https://github.com/combycode/dpe) monorepo (Rust).
 
 ## Input
 

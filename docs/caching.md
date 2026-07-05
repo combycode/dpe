@@ -37,8 +37,8 @@ $DPE_STORAGE/
   whatever `--storage-dir` was set to. Cleared by `dpe run --clear
   storage`. Survives across runs unless explicitly cleared.
 - `<namespace>` — caller-chosen bucket name. Convention: same as the
-  tool name (e.g. `doc-converter`, `llm`, `xlsx`). One namespace per
-  tool keeps caches independent.
+  tool name (e.g. `my-tool`). One namespace per tool keeps caches
+  independent.
 - `<hash>` — first 32 hex chars of blake2b over canonical-JSON of `key`.
   Same key in the same namespace → same file → guaranteed hit on
   re-run.
@@ -65,7 +65,7 @@ counts as "same input":
 ```ts
 // TS
 const result = await ctx.cached(
-  "doc-converter",
+  "my-tool",
   {
     file_hash: await ctx.hashFile(v.path),    // file CONTENTS, not path
     settings_hash: stableHash(settings),       // tool-relevant settings
@@ -81,7 +81,7 @@ ctx.output(result);
 ```python
 # Python
 result = ctx.cached(
-    "doc-converter",
+    "my-tool",
     {
         "file_hash": ctx.hash_file(v["path"]),
         "settings": settings,
@@ -99,7 +99,7 @@ let key = json!({
     "settings": settings,
     "page": page_idx,
 });
-let result: Value = ctx.cached("doc-converter", &key, || {
+let result: Value = ctx.cached("my-tool", &key, || {
     Ok(provider.convert_page(...))
 })?;
 ctx.output(result, None, None);

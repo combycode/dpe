@@ -92,9 +92,7 @@ That's it. Each stage is a separate OS process; the runner wires stdout→stdin 
 | dev-workspace-template | `dev-workspace-template/` | Claude skill pack + fixtures — embedded into dpe-dev |
 | Docker | `docker/` | Multi-stage Dockerfile: `dpe-base` + `dpe-dev` images |
 | Test pipeline | `test-pipeline/` | Regression suite — runs every standard tool against synthesised inputs |
-| Catalogue | `catalog.json` | Manifest of known tools (standard + custom) |
-
-**Custom tools** (mongo-upsert, mongo-find, xlsx-extract, read-tables, classify, llm, doc-converter) ship as separate repos and install via `dpe install <name>`.
+| Catalogue | `catalog.json` | Manifest of standard tools |
 
 ---
 

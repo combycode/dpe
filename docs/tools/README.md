@@ -51,37 +51,13 @@ Every standard tool lives in `tools/<name>/` in the monorepo, is published to `c
 
 ### Built-ins (in-runner, no child process)
 
-See [builtins.md](builtins.md):
+Covered in [builtins.md](builtins.md):
 - `route` — first-truthy channel dispatch
 - `filter` — keep / drop by expression
-- `dedup` — drop duplicates by composite key with persistent index
-- `group-by` — bucket envelopes by key; emit merged group on trigger
+- `dedup` — drop duplicates by composite key with persistent index (supports `path: "$storage/..."` for cross-session state)
+- `group-by` — bucket envelopes by key; emit merged group on trigger (all-sources-present, count threshold, or EOF)
 
-### Custom tools (separate repos, optional install)
-
-These tools are shipped as separate packages under `github.com/combycode/dpe-tool-<name>` — not bundled with `dpe` by default. Install on demand:
-
-```bash
-dpe install <name>   # fetches binary, verifies, installs into ~/.dpe/tools/
-```
-
-Current custom tools (pre-2.0 legacy, migrating):
-- `xlsx-extract`, `read-tables` — spreadsheet processing
-- `doc-converter` — PDF / DOCX → Markdown via LLM vision
-- `classify` — rule-based row classifier
-- `llm` — text-in / text-out LLM call
-- `mongo-upsert`, `mongo-find` — MongoDB streaming
-
-See `catalog.json` in the monorepo root for the authoritative list. `dpe tools list` shows live status.
-| `mongo-find` | Rust | [mongo.md](mongo.md#mongo-find) — stream documents back as envelopes |
-
-### Built-ins (in-runner, no process)
-
-Covered together in [builtins.md](builtins.md):
-- **route** — first-truthy channel dispatch
-- **filter** — keep / drop by expression
-- **dedup** — drop duplicates by composite key with persistent index (now supports `path: "$storage/..."` for cross-session state)
-- **group-by** — bucket envelopes by key; emit merged group on trigger (all-sources-present, count threshold, or EOF)
+`dpe tools list` shows live status of all resolvable tools (standard + built-in + any pipeline-local).
 
 ## How resolving works
 

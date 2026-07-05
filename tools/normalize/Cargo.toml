@@ -4,7 +4,9 @@ version = "2.0.1"
 edition = "2021"
 description = "DPE tool -- universal row normalizer: dict replace, type coercion, key rename, shape transforms, profile-based rulebook dispatch"
 license = "AGPL-3.0-or-later"
-repository = "https://github.com/combycode/dpe-tool-normalize"
+repository = "https://github.com/combycode/dpe"
+homepage = "https://github.com/combycode/dpe"
+documentation = "https://github.com/combycode/dpe/blob/main/docs/tools/normalize.md"
 
 [dependencies]
 combycode-dpe = { path = "../../frameworks/rust" }

@@ -140,11 +140,11 @@ Computes a composite key from path expressions, keeps an in-memory `HashSet<u64>
 ### Toggle (builtin)
 
 ```yaml
-contract-gate:
+slow-branch-gate:
   tool: toggle
-  input: contract-doc-converter
+  input: slow-stage
   settings:
-    env: SKIP_CONTRACTS           # name of env var to check
+    env: SKIP_SLOW                # name of env var to check
     value: "1"                    # OR values: ["1","yes","true"]
     mode: off                     # default "on"
 ```
