@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+### Security
+
+- Dependencies refreshed within semver ranges, clearing all `cargo audit` and `bun audit` advisories (rustls 0.23.39 -> 0.23.46, rustls-webpki, webpki-roots, h2, lru, tokio, anyhow, rustix; fast-uri via ajv in the TS framework's dev dependencies). The runner's control socket no longer uses the deprecated `interprocess` stream split; `dpe status`/`stop`/`pause` behave as before.
+
 ## [2.0.4] — 2026-07-05
 
 Docs / metadata patch — no runtime changes. Publishes exclusively to fix

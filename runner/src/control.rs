@@ -282,8 +282,9 @@ async fn accept_loop(listener: Listener, handle: ControlHandle) {
 }
 
 async fn handle_client(stream: Stream, handle: ControlHandle) {
-    let (read, mut write) = stream.split();
-    let mut reader = BufReader::new(read).lines();
+    // `&Stream` implements AsyncRead + AsyncWrite, so read and write through shared refs.
+    let mut write = &stream;
+    let mut reader = BufReader::new(&stream).lines();
 
     while let Ok(Some(line)) = reader.next_line().await {
         let line = line.trim();
@@ -338,14 +339,14 @@ pub async fn send_request(
     let raw = fs::read_to_string(session_dir.join("control.addr")).await?;
     let name = parse_addr(&raw)?;
     let stream = Stream::connect(name).await?;
-    let (read, mut write) = stream.split();
+    let mut write = &stream;
     let body = serde_json::to_string(request)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     write.write_all(body.as_bytes()).await?;
     write.write_all(b"\n").await?;
     write.flush().await?;
 
-    let mut reader = BufReader::new(read).lines();
+    let mut reader = BufReader::new(&stream).lines();
     let Some(line) = reader.next_line().await? else {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "no response"));
     };
@@ -371,5 +372,26 @@ mod tests {
     #[test]
     fn parse_addr_rejects_unknown_kind() {
         assert!(parse_addr("tcp:127.0.0.1:1234").is_err());
+    }
+
+    // Real socket round trip: the client writes and reads on one stream, the server
+    // answers status and forwards commands to the runner channel.
+    #[tokio::test]
+    async fn server_and_client_round_trip_over_local_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let sid = format!("ctl-rt-{}", std::process::id());
+        let (tx, mut rx) = mpsc::channel(4);
+        let _server = ControlServer::start(dir.path(), &sid, ControlHandle::new(tx)).await.unwrap();
+
+        let status = send_request(dir.path(), &Request::Status).await.unwrap();
+        assert!(status.ok && status.status.is_some(), "{:?}", status.error);
+
+        let stop = send_request(dir.path(), &Request::Stop).await.unwrap();
+        assert!(stop.ok, "{:?}", stop.error);
+        assert!(matches!(rx.recv().await, Some(ControlCommand::Stop)));
+
+        let pause = send_request(dir.path(), &Request::Pause { stage: Some("s1".into()) }).await.unwrap();
+        assert!(pause.ok);
+        assert!(matches!(rx.recv().await, Some(ControlCommand::Pause { stage: Some(ref s) }) if s == "s1"));
     }
 }
