@@ -70,7 +70,7 @@ regex = "1.12"
 # fs-ignore globs, JSON Schema mode for per-file comparison.
 which       = "8"
 globset     = "0.4"
-jsonschema  = "0.46"
+jsonschema  = "0.61"
 
 # Cross-platform local sockets (named pipe on Windows, UDS on Unix).
 # NO TCP for runner<->CLI control; this is the only transport.
