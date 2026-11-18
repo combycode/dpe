@@ -94,7 +94,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: '1.91'
+          toolchain: '1.100'
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -154,7 +154,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: '1.91' }
+        with: { toolchain: '1.100' }
 
       - name: Auth via OIDC
         id: auth

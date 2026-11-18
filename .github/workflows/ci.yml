@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  RUST_VERSION: "1.91"
+  RUST_VERSION: "1.100"
   BUN_VERSION: "1.2.20"
   PYTHON_VERSION: "3.13"
   NODE_VERSION: "24"

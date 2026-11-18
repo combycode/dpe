@@ -63,10 +63,7 @@ fn walk_up_looking_for_frameworks(start: &Path) -> Option<PathBuf> {
            && fwdir.join("python").is_dir() {
             return Some(d.to_path_buf());
         }
-        match d.parent() {
-            Some(p) => d = p,
-            None => return None,
-        }
+        d = d.parent()?;
     }
 }
 

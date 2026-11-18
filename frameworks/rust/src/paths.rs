@@ -41,7 +41,7 @@ impl EnvPaths {
                 Some(Entry { token: token.to_string(), abs: val.replace('\\', "/") })
             })
             .collect();
-        entries.sort_by(|a, b| b.abs.len().cmp(&a.abs.len()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.abs.len()));
         Self { entries }
     }
 
@@ -50,7 +50,7 @@ impl EnvPaths {
         let mut entries: Vec<Entry> = pairs.iter()
             .map(|(t, a)| Entry { token: t.to_string(), abs: a.replace('\\', "/") })
             .collect();
-        entries.sort_by(|a, b| b.abs.len().cmp(&a.abs.len()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.abs.len()));
         Self { entries }
     }
 
