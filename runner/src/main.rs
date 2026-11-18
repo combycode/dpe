@@ -2093,6 +2093,17 @@ fn cmd_config_add_path(path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+mod seed_id_golden_tests {
+    // Reference values from Python hashlib.blake2b(digest_size=N) / hashlib.sha256: ids, cache
+    // keys and on-disk indexes depend on them, so a crate upgrade must not change them.
+    #[test]
+    fn wrapped_seed_id_matches_reference_blake2b_8() {
+        let env = super::wrap_seed_value(r#"{"x":1}"#).unwrap();
+        assert_eq!(env["id"], "e9a986caf601b7f4");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::{check_one, format_coverage_json, format_coverage_text, make_absolute, reject_prefix_arg, strip_unc_prefix, wrap_seed_line};
     use dpe::paths::PathResolver;

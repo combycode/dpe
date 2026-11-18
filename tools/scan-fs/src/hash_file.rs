@@ -61,6 +61,18 @@ mod tests {
         p
     }
 
+    // Reference values from Python hashlib.blake2b(digest_size=N) / hashlib.sha256: ids, cache
+    // keys and on-disk indexes depend on them, so a crate upgrade must not change them.
+    #[test]
+    fn blake2b_matches_reference_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write_file(tmp.path(), "abc", b"abc");
+        assert_eq!(hash_file(&p, HashAlgo::Blake2b).unwrap().as_deref(), Some("cf4ab791c62b8d2b2109c90275287816"));
+        let body: Vec<u8> = (0..1000).flat_map(|_| 0u8..=255).collect();
+        let p = write_file(tmp.path(), "big", &body);
+        assert_eq!(hash_file(&p, HashAlgo::Blake2b).unwrap().as_deref(), Some("53b77b188c91a7d66c490e9489b2fc73"));
+    }
+
     #[test]
     fn algo_none_returns_none() {
         let tmp = tempfile::tempdir().unwrap();

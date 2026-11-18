@@ -362,6 +362,15 @@ mod tests {
     use super::*;
     use crate::types::{DedupHashAlgo, OnDuplicate};
 
+    // Reference values from Python hashlib.blake2b(digest_size=N) / hashlib.sha256: ids, cache
+    // keys and on-disk indexes depend on them, so a crate upgrade must not change them.
+    #[test]
+    fn blake2b_key_hash_matches_reference_values() {
+        let h = |v: Value| compute_key_hash(&serde_json::json!({"t": "d", "v": v}), &[], DedupHashAlgo::Blake2b);
+        assert_eq!(h(serde_json::json!("abc")), 317167118638933401612357349960100719314u128);
+        assert_eq!(h(serde_json::json!({"a": 1})), 143623702785184438838094324610458807084u128);
+    }
+
     fn dedup_cfg(name: &str) -> crate::types::DedupCfg {
         crate::types::DedupCfg {
             key: vec!["v.hash".into()],

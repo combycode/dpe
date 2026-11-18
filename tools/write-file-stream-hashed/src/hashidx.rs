@@ -139,3 +139,15 @@ pub(crate) fn open_or_create_sidecar(path: &Path) -> std::io::Result<File> {
 pub(crate) fn sidecar_path(content_path: &str) -> String {
     format!("{}.hashidx", content_path)
 }
+
+#[cfg(test)]
+mod golden_hash_tests {
+    use super::HashAlgo;
+
+    // Reference value from Python hashlib.blake2b(digest_size=8), read little-endian: the
+    // sidecar index on disk stores these, so a crate upgrade must not change them.
+    #[test]
+    fn blake2b64_matches_reference_value() {
+        assert_eq!(HashAlgo::Blake2b64.hash(b"abc"), 6_455_300_059_550_759_896u64);
+    }
+}

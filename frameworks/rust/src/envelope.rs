@@ -162,3 +162,32 @@ mod hex {
         s
     }
 }
+
+#[cfg(test)]
+mod golden_hash_tests {
+    use super::*;
+
+    // Reference values from Python hashlib.blake2b(digest_size=N) / hashlib.sha256: ids, cache
+    // keys and on-disk indexes depend on them, so a crate upgrade must not change them.
+    #[test]
+    fn hash_string_matches_reference_blake2b_8() {
+        assert_eq!(hash_string(""), "e4a6a0577479b2b4");
+        assert_eq!(hash_string("abc"), "d8bb14d833d59559");
+        assert_eq!(hash_string("путь/файл.pdf"), "481407320d6d5e9a");
+    }
+
+    #[test]
+    fn hash_file_matches_reference_blake2b_16_across_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("big.bin");
+        let body: Vec<u8> = (0..1000).flat_map(|_| 0u8..=255).collect();
+        std::fs::write(&p, &body).unwrap();
+        let p = p.to_str().unwrap();
+        for chunk in [7, 4096, 1 << 20] {
+            assert_eq!(hash_file(p, chunk).as_deref(), Some("53b77b188c91a7d66c490e9489b2fc73"));
+        }
+        let small = dir.path().join("abc.txt");
+        std::fs::write(&small, b"abc").unwrap();
+        assert_eq!(hash_file(small.to_str().unwrap(), 4096).as_deref(), Some("cf4ab791c62b8d2b2109c90275287816"));
+    }
+}

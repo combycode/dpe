@@ -249,6 +249,14 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<usize> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sha256_hex_matches_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("abc");
+        std::fs::write(&p, b"abc").unwrap();
+        assert_eq!(sha256_hex(&p).unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
     #[test] fn platform_tag_looks_sensible() {
         let t = current_platform_tag();
         assert!(t.contains('-'));
