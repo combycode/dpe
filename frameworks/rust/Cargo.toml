@@ -12,7 +12,7 @@ readme = "README.md"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-blake2 = { version = "0.10", features = ["std"] }
+blake2 = "0.11"
 ctrlc = "3"
 # Used by atomic::write_atomic_async and polling::poll_until_async -- tools
 # that need a tokio runtime opt in via tokio = "1" in their own Cargo.toml.
