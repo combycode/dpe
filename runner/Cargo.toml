@@ -52,7 +52,7 @@ flate2 = "1"
 ureq = "3.3.0"
 
 # Utilities
-dirs = "6"
+dirs = "7"
 thiserror = "2"
 anyhow = "1"
 

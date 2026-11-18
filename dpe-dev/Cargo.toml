@@ -22,7 +22,7 @@ anyhow = "1"
 thiserror = "2"
 walkdir = "2"
 pathdiff = "0.2"
-dirs = "6"
+dirs = "7"
 include_dir = "0.7"
 
 [dev-dependencies]
