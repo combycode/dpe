@@ -54,3 +54,7 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 check_untyped_defs = false
+
+[tool.pytest.ini_options]
+# Import the checkout's own src/ even when another copy of `dpe` is installed.
+pythonpath = ["src"]
