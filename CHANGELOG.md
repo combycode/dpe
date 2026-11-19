@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **`settings.cache_default_mode`** in a variant now sets the session cache mode when `dpe run` / `dpe test` get no `--cache`; it was parsed (and documented in the schema as the stage default) but ignored, so sessions always used `use`. Variants that set it now get the mode they asked for; `--cache` still wins, and in `dpe run` so does a stage's `cache:`. In `dpe test` it comes after the phase's / case's `cache:`.
+- **Runner config `[cache].default_mode`** now applies, below the variant's `cache_default_mode` (it was parsed but ignored). Seven other config keys that were documented but never read (`control_pipe`, `logger_pipe`, `[cache].shard_depth`, `[spawn].max_restarts`, `[spawn].restart_backoff_ms`, `[lifecycle].recommended_max_sessions`, `[dev].frameworks_cache`) are still accepted, are now listed as reserved in the configuration docs, and print a startup warning when set to a non-default value.
 
 ### Security
 

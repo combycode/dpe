@@ -70,7 +70,7 @@ settings:
   cache_default_mode: refresh # use | refresh | bypass | off; default use
 ```
 
-`cache_default_mode` is the session's cache mode when `dpe run` / `dpe test` get no `--cache`. Order, highest first — `dpe run`: the stage's `cache:` → `--cache` → `cache_default_mode` → `use`; `dpe test`: `--cache` → the phase's / case's `cache:` in `test.yaml` → `cache_default_mode` → `use`.
+`cache_default_mode` is the session's cache mode when `dpe run` / `dpe test` get no `--cache`. Order, highest first — `dpe run`: the stage's `cache:` → `--cache` → `cache_default_mode` → `[cache].default_mode` in the runner [config](configuration.md) (`use` unless set); `dpe test`: `--cache` → the phase's / case's `cache:` in `test.yaml` → `cache_default_mode` → `[cache].default_mode`.
 
 ## DAG patterns
 

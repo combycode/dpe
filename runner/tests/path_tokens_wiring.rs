@@ -184,7 +184,7 @@ async fn dpe_run_cache_mode_variant_default_and_stage_override() {
         variant: "main".into(),
         session_id: dpe::env::new_session_id(),
         input, output,
-        cache_mode: dpe::env::session_cache_mode(None, &v.settings),   // as `dpe run` without --cache
+        cache_mode: dpe::env::session_cache_mode(None, &v.settings, CacheMode::Use),   // as `dpe run` without --cache
         path_tokens: true,
         temp_override: None,
         storage_override: None,
@@ -217,4 +217,28 @@ async fn dpe_test_cli_cache_beats_variant_default() {
     let data = fs::read_to_string(case.join("expected/data.ndjson")).unwrap();
     let env: Value = serde_json::from_str(data.lines().next().unwrap()).unwrap();
     assert_eq!(env["v"]["_env"]["DPE_CACHE_MODE"], json!("off"));
+}
+
+#[tokio::test]
+async fn dpe_test_config_cache_default_applies_below_the_variant() {
+    async fn mode_with(variant_yaml: &str) -> Value {
+        let tmp = build_pipeline(variant_yaml);
+        let dir = tmp.path();
+        let case = dir.join("tests/main/inherit/case-baseline");
+        fs::create_dir_all(case.join("input")).unwrap();
+        fs::write(case.join("input/seed.ndjson"), "{\"t\":\"d\",\"id\":\"e0\",\"src\":\"s\",\"v\":{\"x\":1}}\n").unwrap();
+        let target = TestTarget {
+            pipeline_dir: dir.to_path_buf(),
+            pipeline_name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+            variant: Some("main".into()), stage: Some("inherit".into()), case: Some("case-baseline".into()),
+        };
+        let mut cfg = RunnerConfig::default();
+        cfg.cache.default_mode = CacheMode::Bypass;
+        dpe::test_runner::run_many(&target, &cfg, UpdateMode::Always, None).await.unwrap();
+        let data = fs::read_to_string(case.join("expected/data.ndjson")).unwrap();
+        serde_json::from_str::<Value>(data.lines().next().unwrap()).unwrap()["v"]["_env"]["DPE_CACHE_MODE"].clone()
+    }
+    let no_variant_default = CACHE_VARIANT.replace("settings:\n  cache_default_mode: refresh\n", "");
+    assert_eq!(mode_with(&no_variant_default).await, json!("bypass"));   // config default
+    assert_eq!(mode_with(CACHE_VARIANT).await, json!("refresh"));        // variant beats config
 }

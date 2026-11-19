@@ -647,6 +647,7 @@ async fn run_one_case(
                 cli_cache,
                 variant_path_tokens: crate::env::variant_path_tokens(&variant.settings),
                 variant_cache_default: variant.settings.cache_default_mode,
+                config_cache_default: config.cache.default_mode,
                 update,
                 wrote: &mut updated_files,
             }
@@ -826,15 +827,16 @@ struct RunPhaseInputs<'a> {
     cli_cache:     Option<crate::types::CacheMode>,
     variant_path_tokens: bool,
     variant_cache_default: Option<crate::types::CacheMode>,
+    config_cache_default: CacheMode,
     update:        UpdateMode,
     wrote:         &'a mut Vec<PathBuf>,
 }
 
 /// `dpe test` cache mode: `--cache` > phase `cache:` > case `cache:` > the variant's
-/// `cache_default_mode` > `use`.
+/// `cache_default_mode` > the runner config's `[cache].default_mode` (`use` unless set).
 fn test_cache_mode(cli: Option<CacheMode>, phase: Option<CacheMode>, case: Option<CacheMode>,
-                   variant: Option<CacheMode>) -> CacheMode {
-    cli.or(phase).or(case).or(variant).unwrap_or(CacheMode::Use)
+                   variant: Option<CacheMode>, config: CacheMode) -> CacheMode {
+    cli.or(phase).or(case).or(variant).unwrap_or(config)
 }
 
 async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
@@ -884,7 +886,8 @@ async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
     }
 
     let effective_cache = test_cache_mode(inp.cli_cache, phase.and_then(|p| p.cache),
-                                          inp.test_spec.cache, inp.variant_cache_default);
+                                          inp.test_spec.cache, inp.variant_cache_default,
+                                          inp.config_cache_default);
 
     // assert: phase wins, else case
     let effective_assert: Option<&script::AssertYaml> = phase
@@ -2183,11 +2186,12 @@ mod tests {
     #[test]
     fn test_cache_mode_precedence() {
         use crate::types::CacheMode::*;
-        assert_eq!(test_cache_mode(Some(Bypass), Some(Refresh), Some(Off), Some(Refresh)), Bypass);
-        assert_eq!(test_cache_mode(None, Some(Refresh), Some(Off), Some(Bypass)), Refresh);
-        assert_eq!(test_cache_mode(None, None, Some(Off), Some(Bypass)), Off);
-        assert_eq!(test_cache_mode(None, None, None, Some(Bypass)), Bypass);
-        assert_eq!(test_cache_mode(None, None, None, None), Use);
+        assert_eq!(test_cache_mode(Some(Bypass), Some(Refresh), Some(Off), Some(Refresh), Off), Bypass);
+        assert_eq!(test_cache_mode(None, Some(Refresh), Some(Off), Some(Bypass), Off), Refresh);
+        assert_eq!(test_cache_mode(None, None, Some(Off), Some(Bypass), Use), Off);
+        assert_eq!(test_cache_mode(None, None, None, Some(Bypass), Off), Bypass);
+        assert_eq!(test_cache_mode(None, None, None, None, Refresh), Refresh);
+        assert_eq!(test_cache_mode(None, None, None, None, Use), Use);
     }
 
     // ─── timeout_ms — case-level + phase-level + default ────────────────

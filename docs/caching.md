@@ -46,7 +46,8 @@ $DPE_STORAGE/
 ## Cache modes
 
 The runner exports `DPE_CACHE_MODE` to every spawned tool. Set by `--cache <mode>` on
-`dpe run` / `dpe test`, else the variant's `settings.cache_default_mode`, else `use`; in
+`dpe run` / `dpe test`, else the variant's `settings.cache_default_mode`, else the runner
+config's `[cache].default_mode` (`use` unless set); in
 `dpe run` a stage's own `cache:` overrides it for that stage.
 Tools using `ctx.cached` honor it automatically.
 

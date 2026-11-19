@@ -40,10 +40,11 @@ pub fn parse_cache_flag(v: Option<&str>) -> Result<Option<CacheMode>, String> {
 }
 
 /// The session cache mode: the `--cache` flag when given, else the variant's
-/// `settings.cache_default_mode`, else `use`. A stage's own `cache:` still overrides it
-/// per stage (see `env_for_stage`).
-pub fn session_cache_mode(cli: Option<CacheMode>, settings: &crate::types::PipelineSettings) -> CacheMode {
-    cli.or(settings.cache_default_mode).unwrap_or(CacheMode::Use)
+/// `settings.cache_default_mode`, else the runner config's `[cache].default_mode`
+/// (`use` unless set). A stage's own `cache:` still overrides it per stage (see `env_for_stage`).
+pub fn session_cache_mode(cli: Option<CacheMode>, settings: &crate::types::PipelineSettings,
+                          config_default: CacheMode) -> CacheMode {
+    cli.or(settings.cache_default_mode).unwrap_or(config_default)
 }
 
 /// The variant-level `path_tokens` for a session: `settings.path_tokens`,
@@ -308,16 +309,17 @@ mod tests {
         assert!(parse_cache_flag(Some("never")).is_err());
         // An explicit --cache use beats the variant default.
         let s = crate::types::PipelineSettings { cache_default_mode: Some(CacheMode::Refresh), ..Default::default() };
-        assert_eq!(session_cache_mode(parse_cache_flag(Some("use")).unwrap(), &s), CacheMode::Use);
-        assert_eq!(session_cache_mode(parse_cache_flag(None).unwrap(), &s), CacheMode::Refresh);
+        assert_eq!(session_cache_mode(parse_cache_flag(Some("use")).unwrap(), &s, CacheMode::Use), CacheMode::Use);
+        assert_eq!(session_cache_mode(parse_cache_flag(None).unwrap(), &s, CacheMode::Use), CacheMode::Refresh);
     }
 
     #[test] fn session_cache_mode_precedence() {
         let mut s = crate::types::PipelineSettings::default();
-        assert_eq!(session_cache_mode(None, &s), CacheMode::Use);
+        assert_eq!(session_cache_mode(None, &s, CacheMode::Use), CacheMode::Use);
+        assert_eq!(session_cache_mode(None, &s, CacheMode::Bypass), CacheMode::Bypass);   // config default
         s.cache_default_mode = Some(CacheMode::Refresh);
-        assert_eq!(session_cache_mode(None, &s), CacheMode::Refresh);
-        assert_eq!(session_cache_mode(Some(CacheMode::Off), &s), CacheMode::Off);
+        assert_eq!(session_cache_mode(None, &s, CacheMode::Bypass), CacheMode::Refresh);  // variant beats config
+        assert_eq!(session_cache_mode(Some(CacheMode::Off), &s, CacheMode::Bypass), CacheMode::Off);
     }
 
     #[test] fn variant_path_tokens_defaults_on() {

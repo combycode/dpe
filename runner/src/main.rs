@@ -69,7 +69,7 @@ enum Command {
         /// What to clear before starting (session|temp|storage|all)
         #[arg(long)]
         clear: Option<String>,
-        /// Cache mode (use|refresh|bypass|off); default: the variant's cache_default_mode, else use
+        /// Cache mode (use|refresh|bypass|off); default: the variant's cache_default_mode, else config [cache].default_mode
         #[arg(long)]
         cache: Option<String>,
         /// Override `$temp`. Default: <pipeline>/temp. Use this to
@@ -250,7 +250,7 @@ enum Command {
         /// Useful for stability tests that must hit the real tool every run
         /// (e.g. LLM determinism checks → `--cache bypass`). Precedence:
         /// this flag > phase / case `cache:` in `test.yaml` > the variant's
-        /// `settings.cache_default_mode` > `use`. Applies uniformly to bulk
+        /// `settings.cache_default_mode` > config `[cache].default_mode`. Applies uniformly to bulk
         /// runs (every case in the bulk inherits it).
         #[arg(long, value_name = "MODE")]
         cache: Option<String>,
@@ -334,6 +334,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let cfg = dpe::load_config(cli.config.as_deref())?;
+    for key in cfg.inert_settings() {
+        eprintln!("[warn] config: `{key}` has no effect (reserved; see docs/configuration.md)");
+    }
 
     match cli.command {
         Command::Init { name, out } => cmd_init(&name, &out),
@@ -1036,7 +1039,7 @@ fn cmd_run(
 
     let cli_cache = dpe::env::parse_cache_flag(cache.as_deref()).map_err(anyhow::Error::msg)?;
     // --cache, else the variant's cache_default_mode, else use.
-    let cache_mode = dpe::env::session_cache_mode(cli_cache, &resolved.settings);
+    let cache_mode = dpe::env::session_cache_mode(cli_cache, &resolved.settings, cfg.cache.default_mode);
 
     let session_id = dpe::env::new_session_id();
     let ctx = dpe::env::SessionContext {

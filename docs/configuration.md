@@ -20,10 +20,6 @@ tools_paths = ["~/.dpe/tools"]
 # Where `dpe install <name>` places new tools. Defaults to ~/.dpe/tools
 default_install_path = "~/.dpe/tools"
 
-# Overrides for runner transport (advanced — leave empty by default)
-control_pipe = ""
-logger_pipe  = ""
-
 [trace]
 max_events             = 10000      # in-memory buffer cap
 flush_ms               = 1000       # periodic flush of trace.N.ndjson
@@ -39,16 +35,11 @@ channel_capacity  = 4096            # mpsc channel size
 tail_default      = 50              # default --tail N for `dpe log <session>`
 
 [cache]
-default_mode = "use"         # use | refresh | bypass | off
-shard_depth  = 2
+default_mode = "use"         # use | refresh | bypass | off: cache mode when neither --cache
+                             # nor the variant's settings.cache_default_mode sets one
 
 [spawn]
-max_restarts     = 3
-restart_backoff_ms = [500, 2000, 5000]
-sigterm_grace_ms = 10000
-
-[lifecycle]
-recommended_max_sessions = 50
+sigterm_grace_ms = 10000     # grace period before a stopping tool is killed
 
 # Internal runtime tuning. Most users never touch this. Added v2.0.1+.
 [runtime]
@@ -61,7 +52,6 @@ http_timeout_secs    = 120         # `dpe install` HTTP timeout
 # Dev-specific — consumed by dpe-dev, ignored by dpe runner
 [dev]
 workspace       = "~/.dpe/dev-workspace"
-frameworks_cache = "~/.dpe/frameworks"
 
 # Tool registries — used by `dpe install` + `dpe tools list`. List paths to
 # `catalog.json`-shaped files. Files load in order and merge with
@@ -75,6 +65,20 @@ tools_registries = [
     "/opt/dpe/bin/catalog.json",     # default, ships with installer
 ]
 ```
+
+## Reserved keys (accepted, no effect)
+
+These keys are accepted so existing config files keep loading, but nothing reads them yet.
+When one is set to a value other than its default, `dpe` prints a warning at startup.
+
+| Key | Default |
+|---|---|
+| `control_pipe`, `logger_pipe` | empty |
+| `[cache].shard_depth` | `2` |
+| `[spawn].max_restarts` | `3` |
+| `[spawn].restart_backoff_ms` | `[500, 2000, 5000]` |
+| `[lifecycle].recommended_max_sessions` | `50` |
+| `[dev].frameworks_cache` | unset |
 
 ## ENV-var overrides
 

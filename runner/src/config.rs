@@ -283,6 +283,23 @@ impl Default for LifecycleConfig {
     fn default() -> Self { Self { recommended_max_sessions: d_max_sessions() } }
 }
 
+impl RunnerConfig {
+    /// Keys that are accepted for compatibility but have no effect, listed when set to a
+    /// value other than their default (so a config that sets one is not silently ignored).
+    pub fn inert_settings(&self) -> Vec<&'static str> {
+        let set = |o: &Option<String>| o.as_deref().is_some_and(|s| !s.is_empty());
+        let mut out = Vec::new();
+        if set(&self.control_pipe) { out.push("control_pipe"); }
+        if set(&self.logger_pipe) { out.push("logger_pipe"); }
+        if self.cache.shard_depth != d_shard_depth() { out.push("cache.shard_depth"); }
+        if self.spawn.max_restarts != d_max_restarts() { out.push("spawn.max_restarts"); }
+        if self.spawn.restart_backoff_ms != d_restart_backoff() { out.push("spawn.restart_backoff_ms"); }
+        if self.lifecycle.recommended_max_sessions != d_max_sessions() { out.push("lifecycle.recommended_max_sessions"); }
+        if set(&self.dev.frameworks_cache) { out.push("dev.frameworks_cache"); }
+        out
+    }
+}
+
 fn d_max_events()     -> u64 { 10_000 }
 fn d_flush_ms()       -> u64 { 1_000 }
 fn d_segment_bytes()  -> u64 { 268_435_456 }
@@ -582,5 +599,15 @@ frameworks_cache = "/home/u/.dpe/frameworks"
         assert!(p.is_some());
         let p = p.unwrap();
         assert!(p.ends_with("config.toml"));
+    }
+
+    #[test]
+    fn inert_settings_listed_only_when_changed() {
+        assert!(RunnerConfig::default().inert_settings().is_empty());
+        let docs_example: RunnerConfig = toml::from_str("control_pipe = \"\"\nlogger_pipe = \"\"\n[cache]\nshard_depth = 2\n[spawn]\nmax_restarts = 3\n").unwrap();
+        assert!(docs_example.inert_settings().is_empty(), "defaults copied from the docs are not flagged");
+        let changed: RunnerConfig = toml::from_str("logger_pipe = \"x\"\n[spawn]\nmax_restarts = 5\nrestart_backoff_ms = [1]\n[lifecycle]\nrecommended_max_sessions = 9\n[dev]\nframeworks_cache = \"/f\"\n").unwrap();
+        assert_eq!(changed.inert_settings(), ["logger_pipe", "spawn.max_restarts", "spawn.restart_backoff_ms",
+                                              "lifecycle.recommended_max_sessions", "dev.frameworks_cache"]);
     }
 }
