@@ -108,7 +108,7 @@ stages:
 
 - Only **tokenize on output** is switched off: the stage emits the absolute paths its processor produced. **Resolve on input** stays on, so `$prefix` tokens arriving from upstream or written in settings keep working.
 - The runner passes the setting to each tool as `DPE_PATH_TOKENS=on|off`. A tool started by hand can be given the same variable; `off`, `0`, `false` and `no` turn tokenizing off, anything else (or no variable) leaves it on.
-- It needs a tool built with a DPE SDK that reads `DPE_PATH_TOKENS` (released after 2.0.4). Tools built with an older SDK ignore it and keep tokenizing.
+- It needs a tool built with a DPE SDK that reads `DPE_PATH_TOKENS` (2.1.0 or later). Tools built with an older SDK ignore it and keep tokenizing.
 - Downstream builtins then see the absolute form: an expression like `v.path == "$output/report.json"` after a `path_tokens: false` stage must compare against the absolute path instead (see above).
 - `dpe test` snapshots of such a stage contain machine-specific absolute paths.
 

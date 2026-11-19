@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+## [2.1.0] — 2026-11-19
+
+Minor release: one new setting (`path_tokens`), two cache settings that were ignored now work, YAML parser update, dependency and security refresh. Pipelines that ran on 2.0.4 run unchanged, except the YAML edge cases listed under Changed.
+
 ### Added
 
 - **`path_tokens`** — turn off re-tokenizing of emitted paths, for a whole variant (`settings: { path_tokens: false }`) or one stage (`path_tokens: false`, which wins over the variant). With it off a tool emits the absolute paths its processor produced instead of `$prefix/...` tokens; resolving tokens on input is unchanged. The runner passes it as `DPE_PATH_TOKENS=on|off`, read by the Rust, TypeScript and Python SDKs (`EnvPaths::with_tokenize` / `withTokenize` / `with_tokenize` for code). Default stays on. Tools built with an SDK up to 2.0.4 ignore the setting. See [path prefixes](docs/path-prefixes.md#turning-tokenization-off-path_tokens).
@@ -148,5 +152,6 @@ No breaking changes; existing pipelines and config files work unchanged.
 
 - **All v1.x.** `combycode/dpe` v1.x is end-of-life as of v2.0.0. No security backports.
 
-[Unreleased]: https://github.com/combycode/dpe/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/combycode/dpe/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/combycode/dpe/compare/v2.0.4...v2.1.0
 [2.0.0]: https://github.com/combycode/dpe/releases/tag/v2.0.0
