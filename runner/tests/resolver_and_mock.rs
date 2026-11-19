@@ -24,17 +24,17 @@ fn mock_tool_dir() -> PathBuf {
 }
 
 fn ensure_mock_built() {
-    let dir = mock_tool_dir();
-    let bin = dir.join("target/release/mock-tool")
-        .with_extension(std::env::consts::EXE_EXTENSION);
-    if !bin.exists() {
-        let status = Command::new("cargo")
+    // Always run cargo (a no-op when up to date): a binary left over from an older
+    // fixture source would otherwise be reused and reject newer settings.
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let status = std::process::Command::new("cargo")
             .args(["build", "--release"])
-            .current_dir(&dir)
+            .current_dir(mock_tool_dir())
             .status()
             .expect("cargo build mock-tool");
         assert!(status.success(), "mock-tool build failed");
-    }
+    });
 }
 
 fn pipeline_with_mock() -> tempfile::TempDir {
