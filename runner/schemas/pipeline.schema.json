@@ -62,7 +62,7 @@
           "type": "string",
           "enum": ["use", "refresh", "bypass", "off"],
           "default": "use",
-          "description": "Session cache mode when dpe run / dpe test get no --cache. A stage's own cache: wins."
+          "description": "Session cache mode when dpe run / dpe test get no --cache. In dpe run a stage's own cache: wins."
         },
         "path_tokens": {
           "type": "boolean",
@@ -117,7 +117,7 @@
         "cache": {
           "type": "string",
           "enum": ["use", "refresh", "bypass", "off"],
-          "description": "Per-stage cache mode override. Default: pipeline-level cache_default_mode."
+          "description": "Per-stage cache mode for dpe run; wins over --cache and cache_default_mode. Default: the session mode."
         },
         "path_tokens": {
           "type": "boolean",

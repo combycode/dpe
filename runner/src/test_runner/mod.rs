@@ -830,6 +830,13 @@ struct RunPhaseInputs<'a> {
     wrote:         &'a mut Vec<PathBuf>,
 }
 
+/// `dpe test` cache mode: `--cache` > phase `cache:` > case `cache:` > the variant's
+/// `cache_default_mode` > `use`.
+fn test_cache_mode(cli: Option<CacheMode>, phase: Option<CacheMode>, case: Option<CacheMode>,
+                   variant: Option<CacheMode>) -> CacheMode {
+    cli.or(phase).or(case).or(variant).unwrap_or(CacheMode::Use)
+}
+
 async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
     let mut report = PhaseReport {
         name: inp.plan.name.clone(),
@@ -876,12 +883,8 @@ async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
         }
     }
 
-    // cache: CLI > phase > case > variant cache_default_mode > Use
-    let effective_cache = inp.cli_cache
-        .or_else(|| phase.and_then(|p| p.cache))
-        .or(inp.test_spec.cache)
-        .or(inp.variant_cache_default)
-        .unwrap_or(CacheMode::Use);
+    let effective_cache = test_cache_mode(inp.cli_cache, phase.and_then(|p| p.cache),
+                                          inp.test_spec.cache, inp.variant_cache_default);
 
     // assert: phase wins, else case
     let effective_assert: Option<&script::AssertYaml> = phase
@@ -2178,32 +2181,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_precedence_cli_wins() {
-        // Logic mirrors run_one_case:
-        //   effective = cli_cache.or(test_spec.cache).unwrap_or(Use)
-        use crate::types::CacheMode;
-        let cli = Some(CacheMode::Bypass);
-        let spec = Some(CacheMode::Refresh);
-        let eff = cli.or(spec).unwrap_or(CacheMode::Use);
-        assert_eq!(eff, CacheMode::Bypass);
-    }
-
-    #[test]
-    fn cache_precedence_spec_wins_when_no_cli() {
-        use crate::types::CacheMode;
-        let cli: Option<CacheMode> = None;
-        let spec = Some(CacheMode::Bypass);
-        let eff = cli.or(spec).unwrap_or(CacheMode::Use);
-        assert_eq!(eff, CacheMode::Bypass);
-    }
-
-    #[test]
-    fn cache_precedence_default_use_when_neither() {
-        use crate::types::CacheMode;
-        let cli: Option<CacheMode> = None;
-        let spec: Option<CacheMode> = None;
-        let eff = cli.or(spec).unwrap_or(CacheMode::Use);
-        assert_eq!(eff, CacheMode::Use);
+    fn test_cache_mode_precedence() {
+        use crate::types::CacheMode::*;
+        assert_eq!(test_cache_mode(Some(Bypass), Some(Refresh), Some(Off), Some(Refresh)), Bypass);
+        assert_eq!(test_cache_mode(None, Some(Refresh), Some(Off), Some(Bypass)), Refresh);
+        assert_eq!(test_cache_mode(None, None, Some(Off), Some(Bypass)), Off);
+        assert_eq!(test_cache_mode(None, None, None, Some(Bypass)), Bypass);
+        assert_eq!(test_cache_mode(None, None, None, None), Use);
     }
 
     // ─── timeout_ms — case-level + phase-level + default ────────────────

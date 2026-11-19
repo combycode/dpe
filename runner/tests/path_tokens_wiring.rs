@@ -200,3 +200,21 @@ async fn dpe_run_cache_mode_variant_default_and_stage_override() {
     assert_eq!(mode("inherit"), json!("refresh"));
     assert_eq!(mode("pinned"), json!("off"));
 }
+
+#[tokio::test]
+async fn dpe_test_cli_cache_beats_variant_default() {
+    let tmp = build_pipeline(CACHE_VARIANT);
+    let dir = tmp.path();
+    let case = dir.join("tests/main/inherit/case-baseline");
+    fs::create_dir_all(case.join("input")).unwrap();
+    fs::write(case.join("input/seed.ndjson"), "{\"t\":\"d\",\"id\":\"e0\",\"src\":\"s\",\"v\":{\"x\":1}}\n").unwrap();
+    let target = TestTarget {
+        pipeline_dir: dir.to_path_buf(),
+        pipeline_name: dir.file_name().unwrap().to_string_lossy().into_owned(),
+        variant: Some("main".into()), stage: Some("inherit".into()), case: Some("case-baseline".into()),
+    };
+    dpe::test_runner::run_many(&target, &RunnerConfig::default(), UpdateMode::Always, Some(CacheMode::Off)).await.unwrap();
+    let data = fs::read_to_string(case.join("expected/data.ndjson")).unwrap();
+    let env: Value = serde_json::from_str(data.lines().next().unwrap()).unwrap();
+    assert_eq!(env["v"]["_env"]["DPE_CACHE_MODE"], json!("off"));
+}

@@ -26,13 +26,19 @@ impl StageEnv {
     }
 }
 
-/// Per-run context that translates 1:1 into `DPE_*` env vars plus the
-/// `PathResolver` prefix map.
-///
-/// `temp_override` and `storage_override` (added in v2.0.1) let `dpe run`
-/// callers redirect `$temp` and `$storage` away from the pipeline dir on
-/// a per-run basis. When None, they fall back to the historical defaults
-/// (`<pipeline_dir>/temp` and `<pipeline_dir>/storage`).
+/// Parse a `--cache` flag value. `None` (flag not given) stays `None`, so the
+/// variant default can apply; an explicit `use` is `Some(Use)` and wins over it.
+pub fn parse_cache_flag(v: Option<&str>) -> Result<Option<CacheMode>, String> {
+    match v {
+        None => Ok(None),
+        Some("use") => Ok(Some(CacheMode::Use)),
+        Some("refresh") => Ok(Some(CacheMode::Refresh)),
+        Some("bypass") => Ok(Some(CacheMode::Bypass)),
+        Some("off") => Ok(Some(CacheMode::Off)),
+        Some(other) => Err(format!("unknown --cache mode: {other} (use|refresh|bypass|off)")),
+    }
+}
+
 /// The session cache mode: the `--cache` flag when given, else the variant's
 /// `settings.cache_default_mode`, else `use`. A stage's own `cache:` still overrides it
 /// per stage (see `env_for_stage`).
@@ -46,6 +52,13 @@ pub fn variant_path_tokens(settings: &crate::types::PipelineSettings) -> bool {
     settings.path_tokens.unwrap_or(true)
 }
 
+/// Per-run context that translates 1:1 into `DPE_*` env vars plus the
+/// `PathResolver` prefix map.
+///
+/// `temp_override` and `storage_override` (added in v2.0.1) let `dpe run`
+/// callers redirect `$temp` and `$storage` away from the pipeline dir on
+/// a per-run basis. When None, they fall back to the historical defaults
+/// (`<pipeline_dir>/temp` and `<pipeline_dir>/storage`).
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub pipeline_dir: PathBuf,
@@ -286,6 +299,17 @@ mod tests {
         assert_eq!(c.env_for_stage("x", 0, None, Some(true))["DPE_PATH_TOKENS"], "on");
         c.path_tokens = true;
         assert_eq!(c.env_for_stage("x", 0, None, Some(false))["DPE_PATH_TOKENS"], "off");
+    }
+
+    #[test] fn parse_cache_flag_values() {
+        assert_eq!(parse_cache_flag(None), Ok(None));
+        assert_eq!(parse_cache_flag(Some("use")), Ok(Some(CacheMode::Use)));
+        assert_eq!(parse_cache_flag(Some("off")), Ok(Some(CacheMode::Off)));
+        assert!(parse_cache_flag(Some("never")).is_err());
+        // An explicit --cache use beats the variant default.
+        let s = crate::types::PipelineSettings { cache_default_mode: Some(CacheMode::Refresh), ..Default::default() };
+        assert_eq!(session_cache_mode(parse_cache_flag(Some("use")).unwrap(), &s), CacheMode::Use);
+        assert_eq!(session_cache_mode(parse_cache_flag(None).unwrap(), &s), CacheMode::Refresh);
     }
 
     #[test] fn session_cache_mode_precedence() {

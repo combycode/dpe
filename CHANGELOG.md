@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- **`settings.cache_default_mode`** in a variant now sets the session cache mode when `dpe run` / `dpe test` get no `--cache`; it was parsed (and documented in the schema as the stage default) but ignored, so sessions always used `use`. Variants that set it now get the mode they asked for; a stage's `cache:` and `--cache` still win. In `dpe test` it comes after the case's `cache:`.
+- **`settings.cache_default_mode`** in a variant now sets the session cache mode when `dpe run` / `dpe test` get no `--cache`; it was parsed (and documented in the schema as the stage default) but ignored, so sessions always used `use`. Variants that set it now get the mode they asked for; `--cache` still wins, and in `dpe run` so does a stage's `cache:`. In `dpe test` it comes after the phase's / case's `cache:`.
 
 ### Security
 

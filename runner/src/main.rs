@@ -69,7 +69,7 @@ enum Command {
         /// What to clear before starting (session|temp|storage|all)
         #[arg(long)]
         clear: Option<String>,
-        /// Cache behavior (use|refresh|bypass)
+        /// Cache mode (use|refresh|bypass|off); default: the variant's cache_default_mode, else use
         #[arg(long)]
         cache: Option<String>,
         /// Override `$temp`. Default: <pipeline>/temp. Use this to
@@ -248,10 +248,10 @@ enum Command {
         update_if_missing: bool,
         /// Cache mode for the spawned stage (`use` | `refresh` | `bypass` | `off`).
         /// Useful for stability tests that must hit the real tool every run
-        /// (e.g. LLM determinism checks → `--cache bypass`). When omitted,
-        /// per-case `cache:` in `test.yaml` wins; otherwise default = `use`.
-        /// Precedence: CLI flag > `test.yaml` > default. Applies uniformly
-        /// to bulk runs (every case in the bulk inherits it).
+        /// (e.g. LLM determinism checks → `--cache bypass`). Precedence:
+        /// this flag > phase / case `cache:` in `test.yaml` > the variant's
+        /// `settings.cache_default_mode` > `use`. Applies uniformly to bulk
+        /// runs (every case in the bulk inherits it).
         #[arg(long, value_name = "MODE")]
         cache: Option<String>,
     },
@@ -377,7 +377,6 @@ fn cmd_test(
     cfg: &dpe::RunnerConfig,
 ) -> anyhow::Result<()> {
     use dpe::test_runner::{parse_target, run_many, ResultKind, UpdateMode};
-    use dpe::types::CacheMode;
 
     let cwd = std::env::current_dir()?;
     let parsed = parse_target(target, &cwd)?;
@@ -385,16 +384,9 @@ fn cmd_test(
                else if update_if_missing { UpdateMode::IfMissing }
                else { UpdateMode::None };
 
-    // Mirror `dpe run`'s --cache parser. None = no CLI override, fall
-    // through to test.yaml `cache:` (or default Use).
-    let cli_cache: Option<CacheMode> = match cache {
-        None             => None,
-        Some("use")      => Some(CacheMode::Use),
-        Some("refresh")  => Some(CacheMode::Refresh),
-        Some("bypass")   => Some(CacheMode::Bypass),
-        Some("off")      => Some(CacheMode::Off),
-        Some(other)      => anyhow::bail!("unknown --cache mode: {} (use|refresh|bypass|off)", other),
-    };
+    // Same parser as `dpe run`. None = no CLI override: phase / case `cache:`,
+    // then the variant's cache_default_mode, then `use`.
+    let cli_cache = dpe::env::parse_cache_flag(cache).map_err(anyhow::Error::msg)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let report = rt.block_on(run_many(&parsed, cfg, mode, cli_cache))?;
@@ -1013,7 +1005,6 @@ fn cmd_run(
     debug_capture: Option<String>,
     cfg: &dpe::RunnerConfig,
 ) -> anyhow::Result<()> {
-    use dpe::types::CacheMode;
 
     // Reject CLI args that start with `$` — they are almost certainly
     // a misused DPE path-prefix. Path prefixes (`$temp`, `$storage`,
@@ -1043,14 +1034,7 @@ fn cmd_run(
         anyhow::bail!("{} validation error(s)", errs.len());
     }
 
-    let cli_cache = match cache.as_deref() {
-        None => None,
-        Some("use") => Some(CacheMode::Use),
-        Some("refresh") => Some(CacheMode::Refresh),
-        Some("bypass") => Some(CacheMode::Bypass),
-        Some("off") => Some(CacheMode::Off),
-        Some(other) => anyhow::bail!("unknown --cache mode: {}", other),
-    };
+    let cli_cache = dpe::env::parse_cache_flag(cache.as_deref()).map_err(anyhow::Error::msg)?;
     // --cache, else the variant's cache_default_mode, else use.
     let cache_mode = dpe::env::session_cache_mode(cli_cache, &resolved.settings);
 
