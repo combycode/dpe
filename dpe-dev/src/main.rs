@@ -234,6 +234,8 @@ fn check(dir: &Path) -> Result<()> {
             legacy_octal_numbers: false,
             // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
             non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
+            // deeper YAML is a clean error; ~250 levels overflow a 1 MB (Windows main-thread) stack
+            budget: serde_saphyr::budget!(max_depth: 128),
         );
         serde_saphyr::from_str_with_options::<serde_json::Value>(bom::strip_bom(&spec_raw), opts)
             .with_context(|| "parse spec.yaml")?;

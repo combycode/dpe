@@ -333,6 +333,8 @@ the looser tokens that catch teams off guard. Two rules to keep in mind:
    (`settings: { mode: 00755 }` gives `755.0`); quote it to keep the digits.
    `.inf`, `-.inf` and `.nan` arrive as strings.
 
+   YAML may nest up to 128 levels; deeper input is rejected with an error.
+
 In short: **quote your strings when they could be confused with bools or
 numbers**. The parser will tell you exactly where to add quotes.
 

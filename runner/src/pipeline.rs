@@ -30,6 +30,8 @@ fn strict_yaml_opts() -> serde_saphyr::Options {
         legacy_octal_numbers: false,
         // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
         non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
+        // deeper YAML is a clean error; ~250 levels overflow a 1 MB (Windows main-thread) stack
+        budget: serde_saphyr::budget!(max_depth: 128),
     )
 }
 
@@ -621,6 +623,41 @@ stages:
         assert_eq!(settings["a"], serde_json::json!(".inf"));
         assert_eq!(settings["b"], serde_json::json!("-.inf"));
         assert_eq!(settings["c"], serde_json::json!(".nan"));
+    }
+
+    fn load_nested_settings(depth: usize) -> Result<ResolvedVariant, String> {
+        let mut yaml = String::from("pipeline: p
+variant: main
+stages:
+  s:
+    tool: marker
+    input: $input
+    settings:
+");
+        for i in 0..depth {
+            yaml.push_str(&" ".repeat(6 + 2 * i));
+            yaml.push_str(if i + 1 == depth { "k: 1
+" } else { "k:
+" });
+        }
+        // Large stack: debug builds recurse much deeper per level than release.
+        std::thread::Builder::new().stack_size(64 << 20).spawn(move || {
+            let (_tmp, variants) = setup();
+            write_variant(&variants, "main", "yaml", &yaml);
+            load_variant(variants.parent().unwrap(), "p", "main").map_err(|e| e.to_string())
+        }).unwrap().join().unwrap()
+    }
+
+    #[test]
+    fn yaml_nesting_limit_is_128_levels() {
+        // serde-saphyr 2.x defaults to 64; we allow 128 and reject deeper input cleanly
+        // instead of risking a stack overflow on a 1 MB main-thread stack.
+        let v = load_nested_settings(100).unwrap();
+        let mut cur = v.stages["s"].settings.as_ref().unwrap();
+        for _ in 0..100 { cur = &cur["k"]; }
+        assert_eq!(*cur, serde_json::json!(1));
+        let err = load_nested_settings(200).unwrap_err();
+        assert!(err.contains("budget breached: Depth"), "{err}");
     }
 
     #[test]
