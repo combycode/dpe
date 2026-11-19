@@ -388,7 +388,7 @@ fn cmd_test(
                else { UpdateMode::None };
 
     // Same parser as `dpe run`. None = no CLI override: phase / case `cache:`,
-    // then the variant's cache_default_mode, then `use`.
+    // then the variant's cache_default_mode, then config [cache].default_mode.
     let cli_cache = dpe::env::parse_cache_flag(cache).map_err(anyhow::Error::msg)?;
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -1038,7 +1038,7 @@ fn cmd_run(
     }
 
     let cli_cache = dpe::env::parse_cache_flag(cache.as_deref()).map_err(anyhow::Error::msg)?;
-    // --cache, else the variant's cache_default_mode, else use.
+    // --cache, else the variant's cache_default_mode, else config [cache].default_mode.
     let cache_mode = dpe::env::session_cache_mode(cli_cache, &resolved.settings, cfg.cache.default_mode);
 
     let session_id = dpe::env::new_session_id();

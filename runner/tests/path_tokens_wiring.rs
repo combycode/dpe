@@ -242,3 +242,38 @@ async fn dpe_test_config_cache_default_applies_below_the_variant() {
     assert_eq!(mode_with(&no_variant_default).await, json!("bypass"));   // config default
     assert_eq!(mode_with(CACHE_VARIANT).await, json!("refresh"));        // variant beats config
 }
+
+/// The `dpe` binary itself: config `[cache].default_mode` reaches the tool below the
+/// variant default, and a reserved key set to a non-default value warns on stderr.
+#[test]
+fn dpe_run_binary_config_cache_default_and_reserved_warning() {
+    fn run(variant_yaml: &str, config: &str) -> (Value, Value, String) {
+        let tmp = build_pipeline(variant_yaml);
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("in")).unwrap();
+        let cfg = dir.join("cfg.toml");
+        fs::write(&cfg, config).unwrap();
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_dpe"))
+            .current_dir(dir.parent().unwrap())
+            .arg("--config").arg(&cfg)
+            .args(["run", &format!("{name}:main"), "--seed", "{\"x\":1}", "--debug-capture"])
+            .arg("-i").arg(dir.join("in")).arg("-o").arg(dir.join("out"))
+            .output().unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(out.status.success(), "dpe run failed: {stderr}");
+        let session = fs::read_dir(dir.join("sessions")).unwrap().next().unwrap().unwrap().path();
+        let mode = |stage: &str| {
+            let line = fs::read_to_string(session.join("debug").join(format!("{stage}.ndjson"))).unwrap();
+            serde_json::from_str::<Value>(line.lines().next().unwrap()).unwrap()["v"]["_env"]["DPE_CACHE_MODE"].clone()
+        };
+        (mode("inherit"), mode("pinned"), stderr)
+    }
+    let no_variant_default = CACHE_VARIANT.replace("settings:\n  cache_default_mode: refresh\n", "");
+    let (inherit, pinned, stderr) = run(&no_variant_default, "[cache]\ndefault_mode = \"bypass\"\n[spawn]\nmax_restarts = 5\n");
+    assert_eq!((inherit, pinned), (json!("bypass"), json!("off")));
+    assert!(stderr.contains("`spawn.max_restarts` has no effect"), "{stderr}");
+    let (inherit, _, stderr) = run(CACHE_VARIANT, "[cache]\ndefault_mode = \"bypass\"\n");
+    assert_eq!(inherit, json!("refresh"));      // variant beats config
+    assert!(!stderr.contains("has no effect"), "{stderr}");
+}

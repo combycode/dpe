@@ -604,10 +604,11 @@ frameworks_cache = "/home/u/.dpe/frameworks"
     #[test]
     fn inert_settings_listed_only_when_changed() {
         assert!(RunnerConfig::default().inert_settings().is_empty());
-        let docs_example: RunnerConfig = toml::from_str("control_pipe = \"\"\nlogger_pipe = \"\"\n[cache]\nshard_depth = 2\n[spawn]\nmax_restarts = 3\n").unwrap();
+        let docs_example: RunnerConfig = toml::from_str("control_pipe = \"\"\nlogger_pipe = \"\"\n[cache]\nshard_depth = 2\n[spawn]\nmax_restarts = 3\nrestart_backoff_ms = [500, 2000, 5000]\n[lifecycle]\nrecommended_max_sessions = 50\n[dev]\nframeworks_cache = \"\"\n").unwrap();
         assert!(docs_example.inert_settings().is_empty(), "defaults copied from the docs are not flagged");
-        let changed: RunnerConfig = toml::from_str("logger_pipe = \"x\"\n[spawn]\nmax_restarts = 5\nrestart_backoff_ms = [1]\n[lifecycle]\nrecommended_max_sessions = 9\n[dev]\nframeworks_cache = \"/f\"\n").unwrap();
-        assert_eq!(changed.inert_settings(), ["logger_pipe", "spawn.max_restarts", "spawn.restart_backoff_ms",
-                                              "lifecycle.recommended_max_sessions", "dev.frameworks_cache"]);
+        let changed: RunnerConfig = toml::from_str("control_pipe = \"c\"\nlogger_pipe = \"x\"\n[cache]\nshard_depth = 3\n[spawn]\nmax_restarts = 5\nrestart_backoff_ms = [1]\n[lifecycle]\nrecommended_max_sessions = 9\n[dev]\nframeworks_cache = \"/f\"\n").unwrap();
+        assert_eq!(changed.inert_settings(), ["control_pipe", "logger_pipe", "cache.shard_depth", "spawn.max_restarts",
+                                              "spawn.restart_backoff_ms", "lifecycle.recommended_max_sessions",
+                                              "dev.frameworks_cache"]);
     }
 }

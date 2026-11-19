@@ -154,7 +154,7 @@ RUN set -eux; \
 
 # Default config — points tools_paths at the bundled dir + lists the bundled
 # catalog in tools_registries.
-RUN printf 'tools_paths = ["/opt/dpe/tools"]\ntools_registries = ["/opt/dpe/bin/catalog.json"]\n\n[dev]\nworkspace = "/workspace/dev-workspace"\nframeworks_cache = "/opt/dpe/frameworks"\n' \
+RUN printf 'tools_paths = ["/opt/dpe/tools"]\ntools_registries = ["/opt/dpe/bin/catalog.json"]\n\n[dev]\nworkspace = "/workspace/dev-workspace"\n' \
     > /opt/dpe/bin/config.toml
 
 # PATH + env defaults

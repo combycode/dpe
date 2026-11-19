@@ -49,7 +49,7 @@ duplex_buf_bytes     = 65536       # in-process tokio::io::duplex bridge buffer
 monitor_poll_ms      = 500         # `dpe monitor` + `dpe log --follow` poll cadence
 http_timeout_secs    = 120         # `dpe install` HTTP timeout
 
-# Dev-specific — consumed by dpe-dev, ignored by dpe runner
+# Dev-specific — written by `dpe-dev setup`; not read by dpe or dpe-dev yet
 [dev]
 workspace       = "~/.dpe/dev-workspace"
 
