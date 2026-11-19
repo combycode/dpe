@@ -28,6 +28,8 @@ fn strict_yaml_opts() -> serde_saphyr::Options {
         strict_booleans: true,
         no_schema: true,
         legacy_octal_numbers: false,
+        // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
+        non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
     )
 }
 
@@ -552,22 +554,37 @@ stages:
     }
 
     #[test]
-    fn yaml_no_schema_rejects_unquoted_bool_token_as_stage_id() {
-        // A stage id is a String. Unquoted `y` is ambiguous (could be bool
-        // in YAML 1.1) — `no_schema` requires the user to quote it.
+    fn yaml_unquoted_norway_token_is_a_plain_string_stage_id() {
+        // Under strict_booleans `y` is never a bool, so it is an ordinary string id
+        // (serde-saphyr 0.0.x rejected it and asked for quotes).
         let (_tmp, variants) = setup();
         write_variant(&variants, "main", "yaml", r#"
 pipeline: p
 variant: main
 stages:
   y:
-    tool: marker
+    tool: n
     input: $input
 "#);
-        let err = load_variant(variants.parent().unwrap(), "p", "main").unwrap_err();
-        let msg = format!("{}", err);
-        assert!(msg.contains("must be quoted") || msg.contains("y"),
-            "expected a quoting hint, got: {}", msg);
+        let v = load_variant(variants.parent().unwrap(), "p", "main").unwrap();
+        assert_eq!(v.stages["y"].tool, "n");
+    }
+
+    #[test]
+    fn yaml_no_schema_rejects_unquoted_number_or_bool_in_string_field() {
+        for tool in ["42", "1.5", "007", "true"] {
+            let (_tmp, variants) = setup();
+            write_variant(&variants, "main", "yaml", &format!(
+                "pipeline: p
+variant: main
+stages:
+  s:
+    tool: {tool}
+    input: $input
+"));
+            let err = load_variant(variants.parent().unwrap(), "p", "main").unwrap_err();
+            assert!(format!("{err}").contains("must be quoted"), "tool: {tool} -> {err}");
+        }
     }
 
     #[test]
@@ -584,5 +601,46 @@ stages:
 "#);
         let v = load_variant(variants.parent().unwrap(), "p", "main").unwrap();
         assert!(v.stages.contains_key("y"));
+    }
+
+    #[test]
+    fn yaml_non_finite_floats_stay_strings_in_settings() {
+        // serde-saphyr 0.0.x kept .inf / .nan as strings; JSON has no such numbers.
+        let (_tmp, variants) = setup();
+        write_variant(&variants, "main", "yaml", r#"
+pipeline: p
+variant: main
+stages:
+  s:
+    tool: marker
+    settings: { a: .inf, b: -.inf, c: .nan }
+    input: $input
+"#);
+        let v = load_variant(variants.parent().unwrap(), "p", "main").unwrap();
+        let settings = v.stages["s"].settings.as_ref().unwrap();
+        assert_eq!(settings["a"], serde_json::json!(".inf"));
+        assert_eq!(settings["b"], serde_json::json!("-.inf"));
+        assert_eq!(settings["c"], serde_json::json!(".nan"));
+    }
+
+    #[test]
+    fn yaml_leading_zero_numbers_in_settings_are_decimal() {
+        // Untyped scalars with leading zeros are decimal (not octal). Since serde-saphyr 2
+        // they arrive as floats (755.0); quote the value to keep it a string.
+        let (_tmp, variants) = setup();
+        write_variant(&variants, "main", "yaml", r#"
+pipeline: p
+variant: main
+stages:
+  s:
+    tool: marker
+    settings: { mode: 00755, code: "007", plain: 755 }
+    input: $input
+"#);
+        let v = load_variant(variants.parent().unwrap(), "p", "main").unwrap();
+        let settings = v.stages["s"].settings.as_ref().unwrap();
+        assert_eq!(settings["mode"].as_f64(), Some(755.0));
+        assert_eq!(settings["code"], serde_json::json!("007"));
+        assert_eq!(settings["plain"], serde_json::json!(755));
     }
 }

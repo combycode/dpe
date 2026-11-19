@@ -319,23 +319,19 @@ the looser tokens that catch teams off guard. Two rules to keep in mind:
        tool: "42"
    ```
 
-   ```yaml
-   # BAD — stage id `y` looks like an implicit bool:
-   stages:
-     y: { tool: filter }
-
-   # GOOD — pick a non-ambiguous identifier, or quote it:
-   stages:
-     yes_stage: { tool: filter }     # rename
-     "y": { tool: filter }           # or quote the key
-   ```
+   Words from the YAML 1.1 boolean list (`y`, `n`, `on`, ...) are not
+   ambiguous under rule 1, so they are accepted unquoted as plain strings:
+   a stage id `y:` or `tool: n` is the string `"y"` / `"n"`.
 
    This applies recursively wherever a String is expected — settings_file
    paths, route channel names, `replicas_routing`, etc.
 
    Fields typed as opaque values (e.g. `settings:` accepts arbitrary
    JSON-shaped data) are not affected — `settings: { tag: 0 }` keeps `tag`
-   as a number, and `settings: { tag: "0" }` keeps it as a string.
+   as a number, and `settings: { tag: "0" }` keeps it as a string. An unquoted
+   number with leading zeros is decimal and arrives as a float
+   (`settings: { mode: 00755 }` gives `755.0`); quote it to keep the digits.
+   `.inf`, `-.inf` and `.nan` arrive as strings.
 
 In short: **quote your strings when they could be confused with bools or
 numbers**. The parser will tell you exactly where to add quotes.

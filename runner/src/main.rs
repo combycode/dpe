@@ -1985,6 +1985,8 @@ fn read_spec_yaml(dir: &std::path::Path) -> (Option<serde_json::Value>, Option<S
         strict_booleans:      true,
         no_schema:            true,
         legacy_octal_numbers: false,
+        // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
+        non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
     );
     let parsed: serde_json::Value = match serde_saphyr::from_str_with_options(
         dpe::bom::strip_bom(&raw), opts,

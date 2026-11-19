@@ -156,6 +156,8 @@ fn load_file(p: &Path) -> Result<Vec<(String, Value)>> {
                 strict_booleans: true,
                 no_schema: true,
                 legacy_octal_numbers: false,
+                // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
+                non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
             );
             let v: Value = serde_saphyr::from_str_with_options(&s, opts)?;
             pairs_from_value(&v)

@@ -31,7 +31,7 @@ indexmap = { version = "2.14", features = ["serde"] }
 # (n/y/no/yes/on/off) as `bool`, silently corrupting string-valued tags.
 # Use only `from_str_with_options(..., yaml_opts())` -- never `from_str`.
 # RUSTSEC-2025-0067/68-clean (replaces serde_yml).
-serde-saphyr = "0.0.25"
+serde-saphyr = "2.2"
 toml = "1.1"
 
 # Runtime

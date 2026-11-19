@@ -430,6 +430,8 @@ fn read_rulebook(path: &Path) -> Result<Rulebook> {
                 strict_booleans: true,
                 no_schema: true,
                 legacy_octal_numbers: false,
+                // keep .inf/.nan/-.inf as strings, as serde-saphyr 0.0.x did
+                non_finite_float_policy: serde_saphyr::options::NonFiniteFloatPolicy::AsString,
             );
             serde_saphyr::from_str_with_options(&s, opts)?
         }

@@ -12,7 +12,7 @@ documentation = "https://github.com/combycode/dpe/blob/main/docs/tools/normalize
 combycode-dpe = { path = "../../frameworks/rust" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-serde-saphyr = "0.0.25"
+serde-saphyr = "2.2"
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
