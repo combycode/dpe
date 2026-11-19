@@ -1043,13 +1043,16 @@ fn cmd_run(
         anyhow::bail!("{} validation error(s)", errs.len());
     }
 
-    let cache_mode = match cache.as_deref() {
-        Some("use") | None => CacheMode::Use,
-        Some("refresh") => CacheMode::Refresh,
-        Some("bypass") => CacheMode::Bypass,
-        Some("off") => CacheMode::Off,
+    let cli_cache = match cache.as_deref() {
+        None => None,
+        Some("use") => Some(CacheMode::Use),
+        Some("refresh") => Some(CacheMode::Refresh),
+        Some("bypass") => Some(CacheMode::Bypass),
+        Some("off") => Some(CacheMode::Off),
         Some(other) => anyhow::bail!("unknown --cache mode: {}", other),
     };
+    // --cache, else the variant's cache_default_mode, else use.
+    let cache_mode = dpe::env::session_cache_mode(cli_cache, &resolved.settings);
 
     let session_id = dpe::env::new_session_id();
     let ctx = dpe::env::SessionContext {

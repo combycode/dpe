@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - YAML parser `serde-saphyr` 0.0.25 -> 2.2, same strict options. Pipelines that loaded before load the same way, checked on 1704 YAML files. Differences: unquoted `y` / `n` / `on` / `off` are now accepted as plain strings in string fields and map keys (they were rejected with "must be quoted"); an unquoted number with leading zeros in an untyped place (`settings:`, `normalize` dictionaries and rulebooks) arrives as a float (`00755` gives `755.0`, it was the integer `755`), so quote it to keep the digits; YAML nested deeper than 128 levels is rejected with a clear error (0.0.x nominally allowed 2000 but overflowed the stack past about 350 levels on Windows). `.inf` / `.nan` stay strings. See [Writing pipelines](docs/writing-pipelines.md#yaml-scalar-conventions-strict-mode).
 - Major dependency bumps with no behaviour change: `dirs` 7, `blake2` 0.11 (envelope ids, cache keys and on-disk hash indexes are pinned to reference values by tests and are unchanged), `jsonschema` 0.61. The TS framework and the `dpe init` template type-check with TypeScript 7.
 
+### Fixed
+
+- **`settings.cache_default_mode`** in a variant now sets the session cache mode when `dpe run` / `dpe test` get no `--cache`; it was parsed (and documented in the schema as the stage default) but ignored, so sessions always used `use`. Variants that set it now get the mode they asked for; a stage's `cache:` and `--cache` still win. In `dpe test` it comes after the case's `cache:`.
+
 ### Security
 
 - Dependencies refreshed within semver ranges, clearing all `cargo audit` and `bun audit` advisories (rustls 0.23.39 -> 0.23.46, rustls-webpki, webpki-roots, h2, lru, tokio, anyhow, rustix; fast-uri via ajv in the TS framework's dev dependencies). The runner's control socket no longer uses the deprecated `interprocess` stream split; `dpe status`/`stop`/`pause` behave as before.

@@ -60,7 +60,9 @@
         },
         "cache_default_mode": {
           "type": "string",
-          "enum": ["use", "refresh", "bypass", "off"]
+          "enum": ["use", "refresh", "bypass", "off"],
+          "default": "use",
+          "description": "Session cache mode when dpe run / dpe test get no --cache. A stage's own cache: wins."
         },
         "path_tokens": {
           "type": "boolean",

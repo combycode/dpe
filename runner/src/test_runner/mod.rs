@@ -646,6 +646,7 @@ async fn run_one_case(
                 plan,
                 cli_cache,
                 variant_path_tokens: crate::env::variant_path_tokens(&variant.settings),
+                variant_cache_default: variant.settings.cache_default_mode,
                 update,
                 wrote: &mut updated_files,
             }
@@ -824,6 +825,7 @@ struct RunPhaseInputs<'a> {
     plan:          &'a PhasePlan<'a>,
     cli_cache:     Option<crate::types::CacheMode>,
     variant_path_tokens: bool,
+    variant_cache_default: Option<crate::types::CacheMode>,
     update:        UpdateMode,
     wrote:         &'a mut Vec<PathBuf>,
 }
@@ -874,10 +876,11 @@ async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
         }
     }
 
-    // cache: CLI > phase > case > Use
+    // cache: CLI > phase > case > variant cache_default_mode > Use
     let effective_cache = inp.cli_cache
         .or_else(|| phase.and_then(|p| p.cache))
         .or(inp.test_spec.cache)
+        .or(inp.variant_cache_default)
         .unwrap_or(CacheMode::Use);
 
     // assert: phase wins, else case

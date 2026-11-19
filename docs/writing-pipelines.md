@@ -50,7 +50,7 @@ dpe run my-pipeline:main -i /some/dir -o /other/dir
 | `replicas` | default 1 | number of processes for this stage |
 | `replicas_routing` | default `round-robin` | `round-robin` \| `hash-id` \| `least-busy` (deferred) |
 | `trace` | default `true` | reserved — trace is always on today |
-| `cache` | default `use` | `use` \| `refresh` \| `bypass` \| `off` — envelope-level cache (reserved) |
+| `cache` | default: the session mode | `use` \| `refresh` \| `bypass` \| `off` — cache mode for this stage's tool (`DPE_CACHE_MODE`); wins over `--cache` and the variant's `cache_default_mode` |
 | `on_error` | default `drop` | `drop` \| `pass` \| `fail` — how runner handles child exit-nonzero |
 | `path_tokens` | default: the variant's `settings.path_tokens` (`true`) | `false` makes this stage emit absolute paths instead of `$prefix/...` tokens — see [path prefixes](path-prefixes.md#turning-tokenization-off-path_tokens) |
 | `routes` | route only | map `channel → expression` |
@@ -66,8 +66,11 @@ A variant can carry a top-level `settings:` block that applies to all its stages
 
 ```yaml
 settings:
-  path_tokens: false   # default true; a stage's own `path_tokens` wins
+  path_tokens: false          # default true; a stage's own `path_tokens` wins
+  cache_default_mode: refresh # use | refresh | bypass | off; default use
 ```
+
+`cache_default_mode` is the session's cache mode when `dpe run` / `dpe test` get no `--cache`. Order for a stage, highest first: the stage's `cache:` → `--cache` → `cache_default_mode` → `use` (in `dpe test`, a phase's or case's `cache:` comes right after `--cache`).
 
 ## DAG patterns
 

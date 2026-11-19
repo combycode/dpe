@@ -33,6 +33,13 @@ impl StageEnv {
 /// callers redirect `$temp` and `$storage` away from the pipeline dir on
 /// a per-run basis. When None, they fall back to the historical defaults
 /// (`<pipeline_dir>/temp` and `<pipeline_dir>/storage`).
+/// The session cache mode: the `--cache` flag when given, else the variant's
+/// `settings.cache_default_mode`, else `use`. A stage's own `cache:` still overrides it
+/// per stage (see `env_for_stage`).
+pub fn session_cache_mode(cli: Option<CacheMode>, settings: &crate::types::PipelineSettings) -> CacheMode {
+    cli.or(settings.cache_default_mode).unwrap_or(CacheMode::Use)
+}
+
 /// The variant-level `path_tokens` for a session: `settings.path_tokens`,
 /// default on. Used by `dpe run` and `dpe test` to fill `SessionContext`.
 pub fn variant_path_tokens(settings: &crate::types::PipelineSettings) -> bool {
@@ -279,6 +286,14 @@ mod tests {
         assert_eq!(c.env_for_stage("x", 0, None, Some(true))["DPE_PATH_TOKENS"], "on");
         c.path_tokens = true;
         assert_eq!(c.env_for_stage("x", 0, None, Some(false))["DPE_PATH_TOKENS"], "off");
+    }
+
+    #[test] fn session_cache_mode_precedence() {
+        let mut s = crate::types::PipelineSettings::default();
+        assert_eq!(session_cache_mode(None, &s), CacheMode::Use);
+        s.cache_default_mode = Some(CacheMode::Refresh);
+        assert_eq!(session_cache_mode(None, &s), CacheMode::Refresh);
+        assert_eq!(session_cache_mode(Some(CacheMode::Off), &s), CacheMode::Off);
     }
 
     #[test] fn variant_path_tokens_defaults_on() {

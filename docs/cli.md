@@ -54,7 +54,8 @@ dpe run my-pipeline:main \
 ```
 
 Creates `<pipeline>/sessions/<id>_<variant>/` and streams envelopes
-through the DAG. Default mode prints a one-line summary at end:
+through the DAG. Without `--cache` the session uses the variant's
+`settings.cache_default_mode` (default `use`); a stage's own `cache:` wins over both. Default mode prints a one-line summary at end:
 
 ```
 [OK] my-pipeline:main — 4 stage(s), 4 succeeded, 0 failed, 14490ms
@@ -323,7 +324,7 @@ dpe test my-pipeline --cache refresh              # bulk: refresh all caches
 
 Modes: `use` (default — read cache, write on miss) | `refresh` (ignore on read, write fresh) | `bypass` (ignore on read, ignore on write) | `off` (never read, never write).
 
-Precedence (highest first): **CLI `--cache <mode>`** → **`test.yaml` `cache:` field** → **default (`use`)**. `--cache` applies uniformly to bulk runs (every case in the bulk inherits it).
+Precedence (highest first): **CLI `--cache <mode>`** → **`test.yaml` `cache:` field** → **the variant's `settings.cache_default_mode`** → **default (`use`)**. `--cache` applies uniformly to bulk runs (every case in the bulk inherits it).
 
 Use `cache: bypass` in `test.yaml` when a case is *inherently* a stability test (committed, reviewable). Use `--cache` for ad-hoc overrides ("rerun all snapshots without cache once before release").
 
