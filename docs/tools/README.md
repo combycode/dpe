@@ -110,6 +110,7 @@ The runner injects these before spawning:
 | `DPE_STORAGE` | `<pipeline>/storage/` |
 | `DPE_TEMP` | `<pipeline>/temp/` |
 | `DPE_CACHE_MODE` | `use` \| `refresh` \| `bypass` \| `off` |
+| `DPE_PATH_TOKENS` | `on` \| `off` — re-tokenize absolute paths to `$prefix/...` on output; a tool without an SDK should honour it too (see [path prefixes](../path-prefixes.md#turning-tokenization-off-path_tokens)) |
 
 Plus inherited from the parent shell: `PATH`, `HOME` / `USERPROFILE`, `USER`, `LANG`, `PYTHONPATH`, `PYENV_*`, `VIRTUAL_ENV`, `PATHEXT`.
 

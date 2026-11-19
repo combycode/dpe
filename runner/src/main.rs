@@ -1060,7 +1060,7 @@ fn cmd_run(
         input: input.clone(),
         output: output.clone(),
         cache_mode,
-        path_tokens: resolved.settings.path_tokens.unwrap_or(true),
+        path_tokens: dpe::env::variant_path_tokens(&resolved.settings),
         temp_override: temp_dir,
         storage_override: storage_dir,
     };

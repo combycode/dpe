@@ -26,7 +26,6 @@ interface Entry {
   abs: string;
 }
 
-/** Resolved env prefix map.  Build once at tool startup; cheap to clone. */
 /** True unless `DPE_PATH_TOKENS` is `off`, `0`, `false` or `no` (any case). */
 export function tokensEnabledFromEnv(): boolean {
   const v = process.env.DPE_PATH_TOKENS;
@@ -34,6 +33,7 @@ export function tokensEnabledFromEnv(): boolean {
   return !['off', '0', 'false', 'no'].includes(v.trim().toLowerCase());
 }
 
+/** Resolved env prefix map.  Build once at tool startup; cheap to clone. */
 export class EnvPaths {
   private entries: Entry[];
   private noTokenize: boolean;

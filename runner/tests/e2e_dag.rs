@@ -1307,7 +1307,7 @@ stages:
 "#);
     let v = load_and_validate(tmp.path());
     let mut ctx = ctx_for(tmp.path());
-    ctx.path_tokens = v.settings.path_tokens.unwrap_or(true);   // as `dpe run` does
+    ctx.path_tokens = dpe::env::variant_path_tokens(&v.settings);   // as `dpe run` does
     let input = br#"{"t":"d","id":"e0","src":"s","v":{"x":1}}
 "#.to_vec();
     let report = run_variant(&v, tmp.path(), &ctx, &RunnerConfig::default(),

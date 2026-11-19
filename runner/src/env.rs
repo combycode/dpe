@@ -33,6 +33,12 @@ impl StageEnv {
 /// callers redirect `$temp` and `$storage` away from the pipeline dir on
 /// a per-run basis. When None, they fall back to the historical defaults
 /// (`<pipeline_dir>/temp` and `<pipeline_dir>/storage`).
+/// The variant-level `path_tokens` for a session: `settings.path_tokens`,
+/// default on. Used by `dpe run` and `dpe test` to fill `SessionContext`.
+pub fn variant_path_tokens(settings: &crate::types::PipelineSettings) -> bool {
+    settings.path_tokens.unwrap_or(true)
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionContext {
     pub pipeline_dir: PathBuf,
@@ -273,6 +279,13 @@ mod tests {
         assert_eq!(c.env_for_stage("x", 0, None, Some(true))["DPE_PATH_TOKENS"], "on");
         c.path_tokens = true;
         assert_eq!(c.env_for_stage("x", 0, None, Some(false))["DPE_PATH_TOKENS"], "off");
+    }
+
+    #[test] fn variant_path_tokens_defaults_on() {
+        let mut s = crate::types::PipelineSettings::default();
+        assert!(variant_path_tokens(&s));
+        s.path_tokens = Some(false);
+        assert!(!variant_path_tokens(&s));
     }
 
     #[test] fn prefix_map_matches_env() {

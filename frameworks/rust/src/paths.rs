@@ -31,7 +31,7 @@ struct Entry {
 pub struct EnvPaths {
     /// Sorted longest-abs-first for greedy tokenization.
     entries: Vec<Entry>,
-    /// Output side switch; false only when DPE_PATH_TOKENS says off.
+    /// Output side switch: true when DPE_PATH_TOKENS says off (tokenize_value is then a no-op).
     no_tokenize: bool,
 }
 

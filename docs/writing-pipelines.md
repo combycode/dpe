@@ -58,9 +58,16 @@ dpe run my-pipeline:main -i /some/dir -o /other/dir
 | `on_false` | filter only | `drop` \| `emit-meta` \| `emit-stderr` |
 | `dedup` | dedup only | `{key, hash_algo, index_name, load_existing, on_duplicate}` |
 
-A variant can also carry top-level `settings:` that apply to all its stages, e.g. `settings: { path_tokens: false }` (default `true`; a stage's own `path_tokens` wins).
-
 Settings are pipeline-local configuration for a tool. They're ordinary JSON; `$prefix` paths (see [path prefixes](path-prefixes.md)) get resolved by the runner before the tool ever sees them.
+
+## Variant settings
+
+A variant can carry a top-level `settings:` block that applies to all its stages. Unlike a stage's tool `settings`, it is a fixed set of runner keys (unknown keys are rejected), for example:
+
+```yaml
+settings:
+  path_tokens: false   # default true; a stage's own `path_tokens` wins
+```
 
 ## DAG patterns
 

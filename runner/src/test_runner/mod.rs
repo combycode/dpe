@@ -645,7 +645,7 @@ async fn run_one_case(
                 test_spec: &test_spec,
                 plan,
                 cli_cache,
-                variant_path_tokens: variant.settings.path_tokens.unwrap_or(true),
+                variant_path_tokens: crate::env::variant_path_tokens(&variant.settings),
                 update,
                 wrote: &mut updated_files,
             }

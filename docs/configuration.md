@@ -140,5 +140,6 @@ The runner injects these into every spawned tool's env:
 | `DPE_INPUT` / `DPE_OUTPUT` / `DPE_TEMP` / `DPE_STORAGE` | Directory paths |
 | `DPE_CONFIGS` | Pipeline's `configs/` dir |
 | `DPE_CACHE_MODE` | `use` / `refresh` / `bypass` / `off` |
+| `DPE_PATH_TOKENS` | `on` / `off` — whether emitted absolute paths are re-tokenized to `$prefix/...` (variant / stage `path_tokens`, see [path prefixes](path-prefixes.md#turning-tokenization-off-path_tokens)) |
 
 Tools should read these rather than hardcoding anything. Runners in containers set them based on volume mounts.

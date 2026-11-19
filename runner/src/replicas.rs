@@ -53,8 +53,8 @@ impl ReplicaGroup {
 
 /// Spawn `replicas` instances of `tool` for one logical stage.
 ///
-/// `overrides` mirrors `spawn` — applied to every replica's
-/// `DPE_CACHE_MODE` so they share the same per-stage cache mode.
+/// `overrides` mirrors `spawn` — applied to every replica's `DPE_CACHE_MODE`
+/// and `DPE_PATH_TOKENS`, so all replicas behave the same.
 pub fn spawn_group(
     tool: &ResolvedTool,
     settings: &Value,
