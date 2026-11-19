@@ -8,8 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+### Added
+
+- **`path_tokens`** — turn off re-tokenizing of emitted paths, for a whole variant (`settings: { path_tokens: false }`) or one stage (`path_tokens: false`, which wins over the variant). With it off a tool emits the absolute paths its processor produced instead of `$prefix/...` tokens; resolving tokens on input is unchanged. The runner passes it as `DPE_PATH_TOKENS=on|off`, read by the Rust, TypeScript and Python SDKs (`EnvPaths::with_tokenize` / `withTokenize` / `with_tokenize` for code). Default stays on. Tools built with an SDK up to 2.0.4 ignore the setting. See [path prefixes](docs/path-prefixes.md#turning-tokenization-off-path_tokens).
+
 ### Changed
 
+- **Documented behaviour, unchanged since 2.0.2:** tools built with a DPE SDK re-tokenize absolute paths in `ctx.output` / `ctx.meta` (`/abs/storage/x.json` becomes `$storage/x.json`), so envelopes between stages and `dpe test` snapshots carry tokens. Consumers that read emitted envelopes without an SDK see the token form; `path_tokens: false` (above) is the opt-out.
 - YAML parser `serde-saphyr` 0.0.25 -> 2.2, same strict options. Pipelines that loaded before load the same way, checked on 1704 YAML files. Differences: unquoted `y` / `n` / `on` / `off` are now accepted as plain strings in string fields and map keys (they were rejected with "must be quoted"); an unquoted number with leading zeros in an untyped place (`settings:`, `normalize` dictionaries and rulebooks) arrives as a float (`00755` gives `755.0`, it was the integer `755`), so quote it to keep the digits; YAML nested deeper than 128 levels is rejected with a clear error (0.0.x nominally allowed 2000 but overflowed the stack past about 350 levels on Windows). `.inf` / `.nan` stay strings. See [Writing pipelines](docs/writing-pipelines.md#yaml-scalar-conventions-strict-mode).
 - Major dependency bumps with no behaviour change: `dirs` 7, `blake2` 0.11 (envelope ids, cache keys and on-disk hash indexes are pinned to reference values by tests and are unchanged), `jsonschema` 0.61. The TS framework and the `dpe init` template type-check with TypeScript 7.
 

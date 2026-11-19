@@ -13,7 +13,7 @@ use dpe::env::SessionContext;
 use dpe::types::CacheMode;
 use dpe::validate::validate;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn mock_tool_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -69,6 +69,7 @@ fn ctx_for(tmp: &std::path::Path) -> SessionContext {
         session_id: dpe::env::new_session_id(),
         input, output,
         cache_mode: CacheMode::Use,
+        path_tokens: true,
         temp_override:    None,
         storage_override: None,
     }
@@ -1249,4 +1250,69 @@ stages:
         InputSource::Empty, OutputSink::Memory,
     ).await.unwrap_err();
     assert!(matches!(err, dpe::dag::DagError::Cycle(_)));
+}
+
+// ─── path_tokens: the runner passes DPE_PATH_TOKENS per stage ─────────
+// (how SDKs react to the variable is covered by each SDK's paths tests)
+
+fn path_tokens_env(report: &dpe::dag::DagReport, stage: &str) -> Value {
+    let out = parse_lines(report.terminal_output.get(stage).expect("terminal output"));
+    out[0]["v"]["_env"]["DPE_PATH_TOKENS"].clone()
+}
+
+#[tokio::test]
+async fn dag_path_tokens_default_on_and_stage_off() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  dflt:
+    tool: mock-tool
+    settings: { echo_env: [DPE_PATH_TOKENS] }
+    input: $input
+  off:
+    tool: mock-tool
+    settings: { echo_env: [DPE_PATH_TOKENS] }
+    path_tokens: false
+    input: $input
+"#);
+    let v = load_and_validate(tmp.path());
+    let ctx = ctx_for(tmp.path());
+    let input = br#"{"t":"d","id":"e0","src":"s","v":{"x":1}}
+"#.to_vec();
+    let report = run_variant(&v, tmp.path(), &ctx, &RunnerConfig::default(),
+        InputSource::Bytes(input), OutputSink::Memory).await.unwrap();
+    assert_eq!(report.stages_failed, 0);
+    assert_eq!(path_tokens_env(&report, "dflt"), json!("on"));
+    assert_eq!(path_tokens_env(&report, "off"), json!("off"));
+}
+
+#[tokio::test]
+async fn dag_variant_path_tokens_off_with_stage_override_on() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+settings:
+  path_tokens: false
+stages:
+  inherit:
+    tool: mock-tool
+    settings: { echo_env: [DPE_PATH_TOKENS] }
+    input: $input
+  on:
+    tool: mock-tool
+    settings: { echo_env: [DPE_PATH_TOKENS] }
+    path_tokens: true
+    input: $input
+"#);
+    let v = load_and_validate(tmp.path());
+    let mut ctx = ctx_for(tmp.path());
+    ctx.path_tokens = v.settings.path_tokens.unwrap_or(true);   // as `dpe run` does
+    let input = br#"{"t":"d","id":"e0","src":"s","v":{"x":1}}
+"#.to_vec();
+    let report = run_variant(&v, tmp.path(), &ctx, &RunnerConfig::default(),
+        InputSource::Bytes(input), OutputSink::Memory).await.unwrap();
+    assert_eq!(report.stages_failed, 0);
+    assert_eq!(path_tokens_env(&report, "inherit"), json!("off"));
+    assert_eq!(path_tokens_env(&report, "on"), json!("on"));
 }

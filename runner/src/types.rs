@@ -41,6 +41,10 @@ pub struct PipelineSettings {
     pub trace: Option<bool>,
     #[serde(default)]
     pub cache_default_mode: Option<CacheMode>,
+    /// Re-tokenize absolute paths to `$token/...` in what tools emit
+    /// (default true). Stages override it with their own `path_tokens`.
+    #[serde(default)]
+    pub path_tokens: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -82,6 +86,9 @@ pub struct Stage {
     pub trace: bool,
     #[serde(default)]
     pub cache: Option<CacheMode>,
+    /// Per-stage override of `settings.path_tokens`.
+    #[serde(default)]
+    pub path_tokens: Option<bool>,
     #[serde(default = "default_on_error")]
     pub on_error: OnError,
     // Built-in specific

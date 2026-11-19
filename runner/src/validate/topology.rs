@@ -94,7 +94,7 @@ mod tests {
             m.insert(n.to_string(), Stage {
                 tool: "t".into(), settings: None, settings_file: None, input: i,
                 replicas: 1, replicas_routing: ReplicasRouting::RoundRobin,
-                trace: true, cache: Some(CacheMode::Use), on_error: OnError::Drop,
+                trace: true, cache: Some(CacheMode::Use), path_tokens: None, on_error: OnError::Drop,
                 routes: None, expression: None, on_false: None, dedup: None, group_by: None,
                 env: None,
             });
@@ -108,7 +108,7 @@ mod tests {
             tool: tool.into(),
             settings: None, settings_file: None, input,
             replicas: 1, replicas_routing: ReplicasRouting::RoundRobin,
-            trace: true, cache: Some(CacheMode::Use),
+            trace: true, cache: Some(CacheMode::Use), path_tokens: None,
             on_error: OnError::Drop,
             routes: None, expression: None, on_false: None, dedup: None, group_by: None,
             env: None,

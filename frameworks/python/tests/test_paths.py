@@ -1,5 +1,7 @@
 """Tests for EnvPaths -- $token resolve/tokenize round-trip."""
 
+import pytest
+
 from dpe._paths import EnvPaths
 
 
@@ -129,3 +131,37 @@ class TestNamedFactories:
         monkeypatch.setenv("DPE_INPUT", "/ignored")
         p = EnvPaths.from_pairs([("input", "/explicit")])
         assert p.resolve_value("$input/file") == "/explicit/file"
+
+
+# ─── DPE_PATH_TOKENS switch ───────────────────────────────────────────────
+
+
+
+def test_path_tokens_default_on(monkeypatch):
+    monkeypatch.setenv("DPE_STORAGE", "/abs/storage")
+    monkeypatch.delenv("DPE_PATH_TOKENS", raising=False)
+    p = EnvPaths.from_env()
+    assert p.tokenize_enabled()
+    assert p.tokenize_value({"f": "/abs/storage/x.json"}) == {"f": "$storage/x.json"}
+
+
+@pytest.mark.parametrize("val", ["off", "OFF", " 0 ", "false", "No"])
+def test_path_tokens_off_keeps_absolute_but_resolves(monkeypatch, val):
+    monkeypatch.setenv("DPE_STORAGE", "/abs/storage")
+    monkeypatch.setenv("DPE_PATH_TOKENS", val)
+    p = EnvPaths.from_env()
+    assert not p.tokenize_enabled()
+    assert p.tokenize_value({"f": "/abs/storage/x.json"}) == {"f": "/abs/storage/x.json"}
+    assert p.resolve_value("$storage/x.json") == "/abs/storage/x.json"
+
+
+@pytest.mark.parametrize("val", ["on", "1", "true", "yes", ""])
+def test_path_tokens_other_values_keep_it_on(monkeypatch, val):
+    monkeypatch.setenv("DPE_STORAGE", "/abs/storage")
+    monkeypatch.setenv("DPE_PATH_TOKENS", val)
+    assert EnvPaths.from_env().tokenize_enabled()
+
+
+def test_with_tokenize_on_explicit_pairs():
+    p = EnvPaths.from_pairs([("storage", "/abs/storage")]).with_tokenize(False)
+    assert p.tokenize_value("/abs/storage/a") == "/abs/storage/a"

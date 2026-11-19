@@ -11,6 +11,21 @@ use std::path::{Path, PathBuf};
 
 use crate::types::CacheMode;
 
+/// Per-stage values from the variant that override the session defaults when
+/// the stage's environment is built (`cache:` and `path_tokens:` on a stage).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StageEnv {
+    pub cache: Option<CacheMode>,
+    pub path_tokens: Option<bool>,
+}
+
+impl StageEnv {
+    /// The overrides a variant stage declares.
+    pub fn of(stage: &crate::types::Stage) -> Self {
+        StageEnv { cache: stage.cache, path_tokens: stage.path_tokens }
+    }
+}
+
 /// Per-run context that translates 1:1 into `DPE_*` env vars plus the
 /// `PathResolver` prefix map.
 ///
@@ -27,6 +42,8 @@ pub struct SessionContext {
     pub input: PathBuf,
     pub output: PathBuf,
     pub cache_mode: CacheMode,
+    /// Variant-level `settings.path_tokens` (default true).
+    pub path_tokens: bool,
     /// Override for $temp. None ⇒ <pipeline_dir>/temp.
     pub temp_override: Option<PathBuf>,
     /// Override for $storage. None ⇒ <pipeline_dir>/storage.
@@ -56,11 +73,13 @@ impl SessionContext {
     /// `stage_cache_override` lets a variant pin a per-stage cache mode
     /// (the `cache:` field on Stage) that takes precedence over the
     /// session-level mode set via `--cache`. None ⇒ inherit session mode.
+    /// `stage_path_tokens` likewise overrides the variant's `path_tokens`.
     pub fn env_for_stage(
         &self,
         stage_id: &str,
         instance_idx: u32,
         stage_cache_override: Option<CacheMode>,
+        stage_path_tokens: Option<bool>,
     ) -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
         m.insert("DPE_PIPELINE_DIR".into(),   to_str(&self.pipeline_dir));
@@ -77,6 +96,8 @@ impl SessionContext {
         m.insert("DPE_SESSION".into(),        to_str(&self.session_dir()));
         let effective_cache = stage_cache_override.unwrap_or(self.cache_mode);
         m.insert("DPE_CACHE_MODE".into(),     cache_mode_str(effective_cache).into());
+        let tokens = stage_path_tokens.unwrap_or(self.path_tokens);
+        m.insert("DPE_PATH_TOKENS".into(),    if tokens { "on" } else { "off" }.into());
         m
     }
 
@@ -154,6 +175,7 @@ mod tests {
             input:         PathBuf::from("/data/in"),
             output:        PathBuf::from("/data/out"),
             cache_mode:    CacheMode::Use,
+            path_tokens:   true,
             temp_override:    None,
             storage_override: None,
         }
@@ -196,13 +218,13 @@ mod tests {
         let mut ctx = sample_ctx();
         ctx.temp_override    = Some(PathBuf::from("/scratch/T"));
         ctx.storage_override = Some(PathBuf::from("/scratch/S"));
-        let env = ctx.env_for_stage("stage", 0, None);
+        let env = ctx.env_for_stage("stage", 0, None, None);
         assert_eq!(env["DPE_TEMP"],    "/scratch/T");
         assert_eq!(env["DPE_STORAGE"], "/scratch/S");
     }
 
     #[test] fn env_for_stage_includes_all_prefixes() {
-        let env = sample_ctx().env_for_stage("scan-001", 0, None);
+        let env = sample_ctx().env_for_stage("scan-001", 0, None, None);
         for k in ["DPE_PIPELINE_DIR","DPE_PIPELINE_NAME","DPE_VARIANT",
                   "DPE_SESSION_ID","DPE_STAGE_ID","DPE_STAGE_INSTANCE",
                   "DPE_INPUT","DPE_OUTPUT","DPE_CONFIGS","DPE_STORAGE",
@@ -213,8 +235,8 @@ mod tests {
 
     #[test] fn env_stage_id_varies_per_stage() {
         let c = sample_ctx();
-        let a = c.env_for_stage("a-001", 0, None);
-        let b = c.env_for_stage("b-002", 3, None);
+        let a = c.env_for_stage("a-001", 0, None, None);
+        let b = c.env_for_stage("b-002", 3, None, None);
         assert_eq!(a["DPE_STAGE_ID"], "a-001");
         assert_eq!(b["DPE_STAGE_ID"], "b-002");
         assert_eq!(a["DPE_STAGE_INSTANCE"], "0");
@@ -228,7 +250,7 @@ mod tests {
             (CacheMode::Bypass, "bypass"), (CacheMode::Off, "off"),
         ] {
             c.cache_mode = mode;
-            assert_eq!(c.env_for_stage("x", 0, None)["DPE_CACHE_MODE"], expected);
+            assert_eq!(c.env_for_stage("x", 0, None, None)["DPE_CACHE_MODE"], expected);
         }
     }
 
@@ -237,15 +259,25 @@ mod tests {
         // session-level mode set via --cache.
         let mut c = sample_ctx();
         c.cache_mode = CacheMode::Use;
-        let env = c.env_for_stage("x", 0, Some(CacheMode::Off));
+        let env = c.env_for_stage("x", 0, Some(CacheMode::Off), None);
         assert_eq!(env["DPE_CACHE_MODE"], "off");
         // Confirm None still inherits the session mode.
-        assert_eq!(c.env_for_stage("x", 0, None)["DPE_CACHE_MODE"], "use");
+        assert_eq!(c.env_for_stage("x", 0, None, None)["DPE_CACHE_MODE"], "use");
+    }
+
+    #[test] fn path_tokens_default_on_variant_off_stage_wins() {
+        let mut c = sample_ctx();
+        assert_eq!(c.env_for_stage("x", 0, None, None)["DPE_PATH_TOKENS"], "on");
+        c.path_tokens = false;                         // variant `settings.path_tokens: false`
+        assert_eq!(c.env_for_stage("x", 0, None, None)["DPE_PATH_TOKENS"], "off");
+        assert_eq!(c.env_for_stage("x", 0, None, Some(true))["DPE_PATH_TOKENS"], "on");
+        c.path_tokens = true;
+        assert_eq!(c.env_for_stage("x", 0, None, Some(false))["DPE_PATH_TOKENS"], "off");
     }
 
     #[test] fn prefix_map_matches_env() {
         let c = sample_ctx();
-        let env = c.env_for_stage("x", 0, None);
+        let env = c.env_for_stage("x", 0, None, None);
         let pm  = c.prefix_map();
         assert_eq!(to_str(&pm["input"]),   env["DPE_INPUT"]);
         assert_eq!(to_str(&pm["output"]),  env["DPE_OUTPUT"]);

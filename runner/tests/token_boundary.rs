@@ -84,6 +84,7 @@ fn ctx_for(dir: &std::path::Path) -> SessionContext {
         input: dir.join("input"),
         output: dir.join("output"),
         cache_mode: CacheMode::Use,
+        path_tokens: true,
         temp_override: None,
         storage_override: None,
     }
@@ -108,8 +109,8 @@ async fn token_form_preserved_through_two_stage_chain() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let mut stages = vec![
-        spawn(&tool, &json!({"tag": "A"}), &ctx, "A", 0, None, None).unwrap(),
-        spawn(&tool, &json!({"tag": "B"}), &ctx, "B", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag": "A"}), &ctx, "A", 0, Default::default(), None).unwrap(),
+        spawn(&tool, &json!({"tag": "B"}), &ctx, "B", 0, Default::default(), None).unwrap(),
     ];
     let handles = wire_linear(&mut stages).unwrap();
 
@@ -148,9 +149,9 @@ async fn token_form_preserved_through_three_stage_chain() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     let mut stages = vec![
-        spawn(&tool, &json!({"tag":"s1"}), &ctx, "s1", 0, None, None).unwrap(),
-        spawn(&tool, &json!({"tag":"s2"}), &ctx, "s2", 0, None, None).unwrap(),
-        spawn(&tool, &json!({"tag":"s3"}), &ctx, "s3", 0, None, None).unwrap(),
+        spawn(&tool, &json!({"tag":"s1"}), &ctx, "s1", 0, Default::default(), None).unwrap(),
+        spawn(&tool, &json!({"tag":"s2"}), &ctx, "s2", 0, Default::default(), None).unwrap(),
+        spawn(&tool, &json!({"tag":"s3"}), &ctx, "s3", 0, Default::default(), None).unwrap(),
     ];
     let handles = wire_linear(&mut stages).unwrap();
 
@@ -190,8 +191,8 @@ async fn builtin_filter_passthrough_preserves_token_form() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, Default::default(), None).unwrap();
 
     let filter = BuiltinFilter::compile(
         "f",
@@ -231,8 +232,8 @@ async fn builtin_filter_expression_matches_token_string_literal() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, Default::default(), None).unwrap();
 
     // Expression compares against the exact token string, NOT an absolute path.
     let filter = BuiltinFilter::compile(
@@ -282,8 +283,8 @@ async fn builtin_filter_expression_does_not_resolve_tokens() {
     let abs_input = ctx.input.to_string_lossy().replace('\\', "/");
     let abs_expr = format!(r#"v.path == "{}/data.csv""#, abs_input);
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink = spawn(&tool, &json!({}), &ctx, "sink", 0, Default::default(), None).unwrap();
 
     // Expression with the RESOLVED absolute path -- this never matches
     // tokenized values in transit because builtins don't resolve.
@@ -325,9 +326,9 @@ async fn builtin_route_expression_matches_token_string_literal() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut ch_in = spawn(&tool, &json!({}), &ctx, "in",  0, None, None).unwrap();
-    let mut ch_out = spawn(&tool, &json!({}), &ctx, "out", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut ch_in = spawn(&tool, &json!({}), &ctx, "in",  0, Default::default(), None).unwrap();
+    let mut ch_out = spawn(&tool, &json!({}), &ctx, "out", 0, Default::default(), None).unwrap();
 
     let mut routes = IndexMap::new();
     routes.insert("in".into(),  r#"v.path == "$input/data.csv""#.into());
@@ -380,8 +381,8 @@ async fn builtin_route_expression_does_not_resolve_tokens() {
     let abs_input = ctx.input.to_string_lossy().replace('\\', "/");
     let abs_expr = format!(r#"v.path == "{}/data.csv""#, abs_input);
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut ch = spawn(&tool, &json!({}), &ctx, "ch", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut ch = spawn(&tool, &json!({}), &ctx, "ch", 0, Default::default(), None).unwrap();
 
     let mut routes = IndexMap::new();
     routes.insert("ch".into(), abs_expr.clone());

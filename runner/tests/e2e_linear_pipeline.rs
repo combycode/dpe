@@ -137,6 +137,7 @@ fn ctx_for(tmp: &std::path::Path) -> SessionContext {
         session_id: "e2e".into(),
         input: tmp.join("in"), output: tmp.join("out"),
         cache_mode: CacheMode::Use,
+        path_tokens: true,
         temp_override:    None,
         storage_override: None,
     }
@@ -173,7 +174,7 @@ stages:
         let stage_cfg = &v.stages[sname];
         let tool = resolve(&stage_cfg.tool, tmp.path(), &RunnerConfig::default()).unwrap();
         let settings = stage_cfg.settings.clone().unwrap_or(serde_json::json!({}));
-        let s = spawn(&tool, &settings, &ctx, sname, 0, None, None).unwrap();
+        let s = spawn(&tool, &settings, &ctx, sname, 0, Default::default(), None).unwrap();
         stages.push(s);
     }
 
@@ -242,7 +243,7 @@ stages:
         let sc = &v.stages[sname];
         let tool = resolve(&sc.tool, tmp.path(), &RunnerConfig::default()).unwrap();
         let settings = sc.settings.clone().unwrap_or(serde_json::json!({}));
-        stages.push(spawn(&tool, &settings, &ctx, sname, 0, None, None).unwrap());
+        stages.push(spawn(&tool, &settings, &ctx, sname, 0, Default::default(), None).unwrap());
     }
     let handles = wire_linear(&mut stages).unwrap();
 

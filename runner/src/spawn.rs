@@ -52,10 +52,10 @@ pub struct SpawnedStage {
 /// Launch `tool` as a child process. Settings are serialized to JSON and
 /// passed as a single argv[1] arg per the DPE tool contract.
 ///
-/// `stage_cache_override` is the per-stage `cache:` field from the
-/// variant. When `Some`, it overrides the session-level cache mode in
-/// the spawned tool's `DPE_CACHE_MODE` env var. `None` ⇒ inherit
-/// session mode (set by the `--cache` CLI flag).
+/// `overrides` carries the per-stage `cache:` / `path_tokens:` fields from the
+/// variant. A `Some` field overrides the session value in the spawned tool's
+/// `DPE_CACHE_MODE` / `DPE_PATH_TOKENS`; `None` inherits it (`--cache` flag,
+/// variant `settings.path_tokens`).
 ///
 /// `extra_env` is injected into the child's environment AFTER the
 /// standard DPE_* vars. Use `None` in production; the test runner uses
@@ -66,7 +66,7 @@ pub fn spawn(
     session: &SessionContext,
     stage_id: &str,
     instance_idx: u32,
-    stage_cache_override: Option<crate::types::CacheMode>,
+    overrides: crate::env::StageEnv,
     extra_env: Option<&BTreeMap<String, String>>,
 ) -> Result<SpawnedStage, SpawnError> {
     let invocation = match &tool.invocation {
@@ -84,7 +84,7 @@ pub fn spawn(
 
     // Runtime env: start empty, inject DPE_*, then selectively inherit from
     // the runner process (PATH is essential; HOME + USERPROFILE for python/bun).
-    for (k, v) in session.env_for_stage(stage_id, instance_idx, stage_cache_override) {
+    for (k, v) in session.env_for_stage(stage_id, instance_idx, overrides.cache, overrides.path_tokens) {
         cmd.env(k, v);
     }
     if let Some(extra) = extra_env {
@@ -255,6 +255,7 @@ mod tests {
             input:  PathBuf::from("/in"),
             output: PathBuf::from("/out"),
             cache_mode: CacheMode::Use,
+            path_tokens: true,
             temp_override:    None,
             storage_override: None,
         }
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn spawning_builtin_rejects() {
         let s = serde_json::json!({});
-        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0, None, None).unwrap_err();
+        let err = spawn(&builtin_tool(), &s, &ctx(), "route-001", 0, Default::default(), None).unwrap_err();
         assert!(matches!(err, SpawnError::IsBuiltin(_)));
     }
 

@@ -6,6 +6,8 @@
  * Output side (context.output / context.meta): absolute path -> $token/subpath
  *
  * Both sides are a no-op when the DPE_* env vars are not set.
+ * `DPE_PATH_TOKENS=off` (also `0` / `false` / `no`) turns the output side off; the
+ * runner sets it from the variant's / stage's `path_tokens`. Input resolution stays on.
  */
 
 import type { JSONValue } from './envelope';
@@ -25,8 +27,16 @@ interface Entry {
 }
 
 /** Resolved env prefix map.  Build once at tool startup; cheap to clone. */
+/** True unless `DPE_PATH_TOKENS` is `off`, `0`, `false` or `no` (any case). */
+export function tokensEnabledFromEnv(): boolean {
+  const v = process.env.DPE_PATH_TOKENS;
+  if (v == null) return true;
+  return !['off', '0', 'false', 'no'].includes(v.trim().toLowerCase());
+}
+
 export class EnvPaths {
   private entries: Entry[];
+  private noTokenize: boolean;
 
   /**
    * If `pairs` is provided, use those (token, abs_path) pairs directly.
@@ -48,6 +58,18 @@ export class EnvPaths {
 
     // Sort longest-abs-first for greedy tokenization.
     this.entries = raw.sort((a, b) => b.abs.length - a.abs.length);
+    this.noTokenize = pairs == null ? !tokensEnabledFromEnv() : false;
+  }
+
+  /** Turn the output side (absolute path -> `$token`) on or off. */
+  withTokenize(on: boolean): EnvPaths {
+    this.noTokenize = !on;
+    return this;
+  }
+
+  /** Whether `tokenizeValue` rewrites anything. */
+  tokenizeEnabled(): boolean {
+    return !this.noTokenize;
   }
 
   /** Read the standard DPE_* env vars; missing/empty vars are skipped. */
@@ -72,7 +94,7 @@ export class EnvPaths {
 
   /** Walk v, tokenizing absolute paths back to $token[/subpath] form. */
   tokenizeValue(v: JSONValue): JSONValue {
-    if (this.isEmpty()) return v;
+    if (this.isEmpty() || this.noTokenize) return v;
     return this.walk(v, (s) => this.tokenizeStr(s));
   }
 

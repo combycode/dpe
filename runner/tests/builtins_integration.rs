@@ -54,6 +54,7 @@ fn ctx_for(dir: &std::path::Path) -> SessionContext {
         session_id: "test".into(),
         input: dir.join("in"), output: dir.join("out"),
         cache_mode: CacheMode::Use,
+        path_tokens: true,
         temp_override:    None,
         storage_override: None,
     }
@@ -74,9 +75,9 @@ async fn route_forwards_to_matching_channel() {
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
     // Upstream emits 6 envelopes with 'kind' in v.kind
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None, None).unwrap();
-    let mut chan_a   = spawn(&tool, &json!({"tag":"A"}),  &ctx, "a",  0, None, None).unwrap();
-    let mut chan_b   = spawn(&tool, &json!({"tag":"B"}),  &ctx, "b",  0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut chan_a   = spawn(&tool, &json!({"tag":"A"}),  &ctx, "a",  0, Default::default(), None).unwrap();
+    let mut chan_b   = spawn(&tool, &json!({"tag":"B"}),  &ctx, "b",  0, Default::default(), None).unwrap();
 
     let mut routes = IndexMap::new();
     routes.insert("a".into(), "v.kind == 'apple'".into());
@@ -124,9 +125,9 @@ async fn route_first_match_wins_on_overlapping_channels() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None, None).unwrap();
-    let mut pri = spawn(&tool, &json!({"tag":"P"}), &ctx, "p", 0, None, None).unwrap();
-    let mut sec = spawn(&tool, &json!({"tag":"S"}), &ctx, "s", 0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut pri = spawn(&tool, &json!({"tag":"P"}), &ctx, "p", 0, Default::default(), None).unwrap();
+    let mut sec = spawn(&tool, &json!({"tag":"S"}), &ctx, "s", 0, Default::default(), None).unwrap();
 
     // Both routes would match 'v.k > 0' for positive k. Per Bug #10 fix,
     // route uses IndexMap → evaluation follows insertion order. We insert
@@ -182,7 +183,7 @@ async fn route_compile_rejects_invalid_expression() {
     let tmp = pipeline_dir();
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
-    let mut w = spawn(&tool, &json!({}), &ctx, "d", 0, None, None).unwrap();
+    let mut w = spawn(&tool, &json!({}), &ctx, "d", 0, Default::default(), None).unwrap();
 
     let mut routes = IndexMap::new();
     routes.insert("x".into(), "v.k >>  ".into());   // syntax error
@@ -202,8 +203,8 @@ async fn filter_keeps_truthy_drops_falsy() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}),   &ctx, "up", 0, None, None).unwrap();
-    let mut sink     = spawn(&tool, &json!({"tag":"sink"}), &ctx, "s",  0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}),   &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink     = spawn(&tool, &json!({"tag":"sink"}), &ctx, "s",  0, Default::default(), None).unwrap();
 
     let filter = BuiltinFilter::compile(
         "f-001", "v.k > 3",
@@ -240,8 +241,8 @@ async fn filter_on_error_drop_by_default() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink     = spawn(&tool, &json!({}),           &ctx, "s",  0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({"tag":"up"}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink     = spawn(&tool, &json!({}),           &ctx, "s",  0, Default::default(), None).unwrap();
 
     // Access a missing nested field → runtime eval error
     let filter = BuiltinFilter::compile(
@@ -271,8 +272,8 @@ async fn filter_on_error_pass_keeps_envelope() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink     = spawn(&tool, &json!({}), &ctx, "s",  0, None, None).unwrap();
+    let mut upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink     = spawn(&tool, &json!({}), &ctx, "s",  0, Default::default(), None).unwrap();
 
     let filter = BuiltinFilter::compile(
         "f", "v.missing > 0",
@@ -297,8 +298,8 @@ async fn filter_handles_malformed_json_line() {
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
 
-    let upstream = spawn(&tool, &json!({}), &ctx, "up", 0, None, None).unwrap();
-    let mut sink = spawn(&tool, &json!({}), &ctx, "s",  0, None, None).unwrap();
+    let upstream = spawn(&tool, &json!({}), &ctx, "up", 0, Default::default(), None).unwrap();
+    let mut sink = spawn(&tool, &json!({}), &ctx, "s",  0, Default::default(), None).unwrap();
 
     let filter = BuiltinFilter::compile(
         "f", "true",
@@ -321,7 +322,7 @@ async fn filter_compile_rejects_invalid_expression() {
     let tmp = pipeline_dir();
     let ctx = ctx_for(tmp.path());
     let tool = resolve("mock-tool", tmp.path(), &Default::default()).unwrap();
-    let mut sink = spawn(&tool, &json!({}), &ctx, "s", 0, None, None).unwrap();
+    let mut sink = spawn(&tool, &json!({}), &ctx, "s", 0, Default::default(), None).unwrap();
 
     let err = BuiltinFilter::compile(
         "f", "v ==",

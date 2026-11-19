@@ -1,7 +1,7 @@
 /**
  * Tests for EnvPaths -- $token resolve/tokenize round-trip.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
 import { EnvPaths } from '../src/paths';
 
 function paths(): EnvPaths {
@@ -168,5 +168,53 @@ describe('from process.env', () => {
     const p = EnvPaths.fromPairs([['input', '/explicit']]);
     expect(p.resolveValue('$input/file')).toBe('/explicit/file');
     delete process.env.DPE_INPUT;
+  });
+});
+
+describe('DPE_PATH_TOKENS switch', () => {
+  const env = ['DPE_STORAGE', 'DPE_PATH_TOKENS'];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of env) saved[k] = process.env[k];
+  });
+  afterEach(() => {
+    for (const k of env) {
+      if (saved[k] == null) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  test('default on: absolute paths become tokens', () => {
+    process.env.DPE_STORAGE = '/abs/storage';
+    delete process.env.DPE_PATH_TOKENS;
+    const p = EnvPaths.fromEnv();
+    expect(p.tokenizeEnabled()).toBe(true);
+    expect(p.tokenizeValue({ f: '/abs/storage/x.json' })).toEqual({ f: '$storage/x.json' });
+  });
+
+  test.each([
+    'off',
+    'OFF',
+    ' 0 ',
+    'false',
+    'No',
+  ])('%p turns the output side off, input still resolves', (val) => {
+    process.env.DPE_STORAGE = '/abs/storage';
+    process.env.DPE_PATH_TOKENS = val;
+    const p = EnvPaths.fromEnv();
+    expect(p.tokenizeEnabled()).toBe(false);
+    expect(p.tokenizeValue({ f: '/abs/storage/x.json' })).toEqual({ f: '/abs/storage/x.json' });
+    expect(p.resolveValue('$storage/x.json')).toBe('/abs/storage/x.json');
+  });
+
+  test.each(['on', '1', 'true', 'yes', ''])('%p keeps it on', (val) => {
+    process.env.DPE_STORAGE = '/abs/storage';
+    process.env.DPE_PATH_TOKENS = val;
+    expect(EnvPaths.fromEnv().tokenizeEnabled()).toBe(true);
+  });
+
+  test('withTokenize overrides explicit pairs', () => {
+    const p = EnvPaths.fromPairs([['storage', '/abs/storage']]).withTokenize(false);
+    expect(p.tokenizeValue('/abs/storage/a')).toBe('/abs/storage/a');
   });
 });

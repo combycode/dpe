@@ -645,6 +645,7 @@ async fn run_one_case(
                 test_spec: &test_spec,
                 plan,
                 cli_cache,
+                variant_path_tokens: variant.settings.path_tokens.unwrap_or(true),
                 update,
                 wrote: &mut updated_files,
             }
@@ -822,6 +823,7 @@ struct RunPhaseInputs<'a> {
     test_spec:     &'a TestSpec,
     plan:          &'a PhasePlan<'a>,
     cli_cache:     Option<crate::types::CacheMode>,
+    variant_path_tokens: bool,
     update:        UpdateMode,
     wrote:         &'a mut Vec<PathBuf>,
 }
@@ -941,6 +943,7 @@ async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
         input:            inp.input_dir.to_path_buf(),
         output:           inp.run_dir.join("output"),
         cache_mode:       effective_cache,
+        path_tokens:      inp.variant_path_tokens,
         temp_override:    Some(inp.run_dir.join("temp")),
         storage_override: Some(inp.run_dir.join("storage")),
     };
@@ -1014,7 +1017,8 @@ async fn run_phase(inp: RunPhaseInputs<'_>) -> PhaseReport {
             let env_for_spawn = if effective_env.is_empty() { None } else { Some(&effective_env) };
             let spawned = match spawn(
                 inp.tool, &resolved_settings, &session_ctx, &inp.case_ref.stage, 0,
-                Some(effective_cache), env_for_spawn,
+                crate::env::StageEnv { cache: Some(effective_cache), path_tokens: inp.stage_def.path_tokens },
+                env_for_spawn,
             ) {
                 Ok(s)  => s,
                 Err(e) => { report.error = Some(format!("spawn: {e}")); return report; }

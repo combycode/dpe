@@ -266,6 +266,7 @@ mod tests {
             replicas_routing: crate::types::ReplicasRouting::RoundRobin,
             trace: true,
             cache: None,
+            path_tokens: None,
             on_error: crate::types::OnError::Drop,
             routes: None,
             expression: None,

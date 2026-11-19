@@ -5,6 +5,8 @@ Input side (runtime, before processor): $token/subpath -> absolute path
 Output side (context.output / context.meta): absolute path -> $token/subpath
 
 Both sides are a no-op when the DPE_* env vars are not set.
+``DPE_PATH_TOKENS=off`` (also ``0`` / ``false`` / ``no``) turns the output side off; the
+runner sets it from the variant's / stage's ``path_tokens``. Input resolution stays on.
 """
 
 import os
@@ -20,10 +22,18 @@ _TOKEN_MAP = [
 ]
 
 
+def tokens_enabled_from_env() -> bool:
+    """True unless ``DPE_PATH_TOKENS`` is ``off``, ``0``, ``false`` or ``no`` (any case)."""
+    v = os.environ.get("DPE_PATH_TOKENS")
+    if v is None:
+        return True
+    return v.strip().lower() not in ("off", "0", "false", "no")
+
+
 class EnvPaths:
     """Resolved env prefix map.  Build once at tool startup."""
 
-    __slots__ = ("_entries",)
+    __slots__ = ("_entries", "_no_tokenize")
 
     def __init__(self, pairs: list[tuple[str, str]] | None = None):
         """
@@ -47,6 +57,16 @@ class EnvPaths:
         self._entries: list[tuple[str, str]] = sorted(
             raw, key=lambda e: len(e[1]), reverse=True
         )
+        self._no_tokenize = (not tokens_enabled_from_env()) if pairs is None else False
+
+    def with_tokenize(self, on: bool) -> "EnvPaths":
+        """Turn the output side (absolute path -> ``$token``) on or off."""
+        self._no_tokenize = not on
+        return self
+
+    def tokenize_enabled(self) -> bool:
+        """Whether :meth:`tokenize_value` rewrites anything."""
+        return not self._no_tokenize
 
     @classmethod
     def from_env(cls) -> "EnvPaths":
@@ -69,7 +89,7 @@ class EnvPaths:
 
     def tokenize_value(self, v: Any) -> Any:
         """Walk v, tokenizing absolute paths back to $token[/subpath] form."""
-        if self.is_empty():
+        if self.is_empty() or self._no_tokenize:
             return v
         return self._walk(v, self._tokenize_str)
 

@@ -52,10 +52,13 @@ dpe run my-pipeline:main -i /some/dir -o /other/dir
 | `trace` | default `true` | reserved — trace is always on today |
 | `cache` | default `use` | `use` \| `refresh` \| `bypass` \| `off` — envelope-level cache (reserved) |
 | `on_error` | default `drop` | `drop` \| `pass` \| `fail` — how runner handles child exit-nonzero |
+| `path_tokens` | default: the variant's `settings.path_tokens` (`true`) | `false` makes this stage emit absolute paths instead of `$prefix/...` tokens — see [path prefixes](path-prefixes.md#turning-tokenization-off-path_tokens) |
 | `routes` | route only | map `channel → expression` |
 | `expression` | filter only | predicate expression |
 | `on_false` | filter only | `drop` \| `emit-meta` \| `emit-stderr` |
 | `dedup` | dedup only | `{key, hash_algo, index_name, load_existing, on_duplicate}` |
+
+A variant can also carry top-level `settings:` that apply to all its stages, e.g. `settings: { path_tokens: false }` (default `true`; a stage's own `path_tokens` wins).
 
 Settings are pipeline-local configuration for a tool. They're ordinary JSON; `$prefix` paths (see [path prefixes](path-prefixes.md)) get resolved by the runner before the tool ever sees them.
 

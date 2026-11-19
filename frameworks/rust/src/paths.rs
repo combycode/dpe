@@ -5,6 +5,8 @@
 //! Output side (context.output / context.meta): absolute path → `$token/subpath`
 //!
 //! Both sides are a no-op when the DPE_* env vars are not set.
+//! `DPE_PATH_TOKENS=off` (also `0` / `false` / `no`) turns the output side off; the
+//! runner sets it from the variant's / stage's `path_tokens`. Input resolution stays on.
 
 use serde_json::{Map, Value};
 
@@ -29,6 +31,20 @@ struct Entry {
 pub struct EnvPaths {
     /// Sorted longest-abs-first for greedy tokenization.
     entries: Vec<Entry>,
+    /// Output side switch; false only when DPE_PATH_TOKENS says off.
+    no_tokenize: bool,
+}
+
+/// True unless `DPE_PATH_TOKENS` is `off`, `0`, `false` or `no` (any case).
+pub fn tokens_enabled_from_env() -> bool {
+    tokens_flag(std::env::var("DPE_PATH_TOKENS").ok().as_deref())
+}
+
+fn tokens_flag(v: Option<&str>) -> bool {
+    match v {
+        Some(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "off" | "0" | "false" | "no"),
+        None => true,
+    }
 }
 
 impl EnvPaths {
@@ -42,7 +58,7 @@ impl EnvPaths {
             })
             .collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.abs.len()));
-        Self { entries }
+        Self { entries, no_tokenize: !tokens_enabled_from_env() }
     }
 
     /// Construct from explicit (token, abs_path) pairs — for tests.
@@ -51,8 +67,17 @@ impl EnvPaths {
             .map(|(t, a)| Entry { token: t.to_string(), abs: a.replace('\\', "/") })
             .collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.abs.len()));
-        Self { entries }
+        Self { entries, no_tokenize: false }
     }
+
+    /// Turn the output side (absolute path -> `$token`) on or off.
+    pub fn with_tokenize(mut self, on: bool) -> Self {
+        self.no_tokenize = !on;
+        self
+    }
+
+    /// Whether `tokenize_value` rewrites anything.
+    pub fn tokenize_enabled(&self) -> bool { !self.no_tokenize }
 
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
 
@@ -63,8 +88,9 @@ impl EnvPaths {
     }
 
     /// Recursively walk `v`, tokenizing absolute paths back to `$token[/subpath]`.
+    /// A no-op when tokenization is off (`DPE_PATH_TOKENS=off`).
     pub fn tokenize_value(&self, v: Value) -> Value {
-        if self.is_empty() { return v; }
+        if self.is_empty() || self.no_tokenize { return v; }
         self.walk_map(v, &|s| self.tokenize_str(s))
     }
 
@@ -166,6 +192,22 @@ mod tests {
         let empty = EnvPaths::default();
         let v = json!({ "p": "$input/foo" });
         assert_eq!(empty.resolve_value(v.clone()), v);
+    }
+
+    // ─── tokenize switch ──────────────────────────────────────────────────
+
+    #[test] fn tokenize_off_keeps_absolute_paths_but_still_resolves() {
+        let p = paths().with_tokenize(false);
+        assert!(!p.tokenize_enabled());
+        assert_eq!(p.tokenize_value(json!({"f": "/abs/storage/x.json"})), json!({"f": "/abs/storage/x.json"}));
+        assert_eq!(p.resolve_value(json!("$storage/x.json")), json!("/abs/storage/x.json"));
+        assert!(paths().tokenize_enabled());
+    }
+
+    #[test] fn tokens_flag_values() {
+        for off in ["off", "OFF", " 0 ", "false", "No"] { assert!(!tokens_flag(Some(off)), "{off}"); }
+        for on in ["on", "1", "true", "", "yes"] { assert!(tokens_flag(Some(on)), "{on}"); }
+        assert!(tokens_flag(None));
     }
 
     // ─── tokenize_value ───────────────────────────────────────────────────

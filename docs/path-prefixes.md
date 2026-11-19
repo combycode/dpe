@@ -91,6 +91,27 @@ route-by-dest:
 
 The same rule applies to `dedup` key paths and `group-by` key paths, since those also read raw field values from the envelope.
 
+### Turning tokenization off: `path_tokens`
+
+Re-tokenizing is what most pipelines want: envelopes stay portable between machines and `dpe test` snapshots do not embed local paths. When a stage's output is read by something that does not resolve tokens (a report consumed outside DPE, an external service), turn the output side off for that stage, or for the whole variant:
+
+```yaml
+settings:
+  path_tokens: false        # every stage in this variant (default: true)
+
+stages:
+  build-report:
+    tool: write-report
+    path_tokens: false      # only this stage; a stage's value wins over the variant's
+    input: summarize
+```
+
+- Only **tokenize on output** is switched off: the stage emits the absolute paths its processor produced. **Resolve on input** stays on, so `$prefix` tokens arriving from upstream or written in settings keep working.
+- The runner passes the setting to each tool as `DPE_PATH_TOKENS=on|off`. A tool started by hand can be given the same variable; `off`, `0`, `false` and `no` turn tokenizing off, anything else (or no variable) leaves it on.
+- It needs a tool built with a DPE SDK that reads `DPE_PATH_TOKENS` (released after 2.0.4). Tools built with an older SDK ignore it and keep tokenizing.
+- Downstream builtins then see the absolute form: an expression like `v.path == "$output/report.json"` after a `path_tokens: false` stage must compare against the absolute path instead (see above).
+- `dpe test` snapshots of such a stage contain machine-specific absolute paths.
+
 ### Tools that do not use the SDK
 
 A tool that manipulates envelopes directly (e.g. a script without a DPE framework SDK) is responsible for respecting the token convention: read `$prefix` tokens from `v`, resolve via `DPE_*` env vars, and re-tokenize before emitting. Omitting re-tokenization means downstream builtins will not be able to match path expressions.

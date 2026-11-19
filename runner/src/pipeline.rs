@@ -175,6 +175,7 @@ fn merge_settings(base: PipelineSettings, overlay: PipelineSettings) -> Pipeline
         trace_buffer: overlay.trace_buffer.or(base.trace_buffer),
         trace: overlay.trace.or(base.trace),
         cache_default_mode: overlay.cache_default_mode.or(base.cache_default_mode),
+        path_tokens: overlay.path_tokens.or(base.path_tokens),
     }
 }
 
@@ -485,6 +486,46 @@ settings:
         let v = load_variant(variants.parent().unwrap(), "p", "v2").unwrap();
         assert_eq!(v.settings.trace, Some(true));
         assert_eq!(v.settings.cache_default_mode, Some(crate::types::CacheMode::Refresh));
+    }
+
+    #[test]
+    fn path_tokens_parse_and_merge() {
+        let (_tmp, variants) = setup();
+        write_variant(&variants, "main", "yaml", r#"
+pipeline: p
+variant: main
+settings:
+  path_tokens: false
+stages:
+  s:
+    tool: marker
+    path_tokens: true
+    input: $input
+  t:
+    tool: marker
+    input: s
+"#);
+        write_variant(&variants, "child", "yaml", r#"
+pipeline: p
+variant: child
+extends: main
+settings:
+  trace: true
+"#);
+        let v = load_variant(variants.parent().unwrap(), "p", "main").unwrap();
+        assert_eq!(v.settings.path_tokens, Some(false));
+        assert_eq!(v.stages["s"].path_tokens, Some(true));
+        assert_eq!(v.stages["t"].path_tokens, None);
+        // An overlay that does not set it inherits the base value.
+        let c = load_variant(variants.parent().unwrap(), "p", "child").unwrap();
+        assert_eq!(c.settings.path_tokens, Some(false));
+    }
+
+    #[test]
+    fn path_tokens_must_be_a_bool() {
+        let (_tmp, variants) = setup();
+        write_variant(&variants, "main", "yaml", "pipeline: p\nvariant: main\nsettings:\n  path_tokens: maybe\nstages: {}\n");
+        assert!(load_variant(variants.parent().unwrap(), "p", "main").is_err());
     }
 
     // ─── deep_merge_json ───────────────────────────────────────────────

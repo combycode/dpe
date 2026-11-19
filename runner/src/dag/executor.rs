@@ -343,7 +343,7 @@ fn spawn_stage_handle_from_planned(
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("resolve: {}", e) })?;
             debug_assert!(matches!(tool.invocation, Invocation::Binary { .. } | Invocation::Command { .. }));
             let single = spawn(&tool, &planned.resolved_settings, session, name, 0,
-                planned.stage_def.cache, None)
+                crate::env::StageEnv::of(&planned.stage_def), None)
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("spawn: {}", e) })?;
             Ok(StageHandle::Single(Box::new(single)))
         }
@@ -352,7 +352,7 @@ fn spawn_stage_handle_from_planned(
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("resolve: {}", e) })?;
             debug_assert!(matches!(tool.invocation, Invocation::Binary { .. } | Invocation::Command { .. }));
             let group = spawn_group(&tool, &planned.resolved_settings, session, name,
-                *count, *routing, planned.stage_def.cache)
+                *count, *routing, crate::env::StageEnv::of(&planned.stage_def))
                 .map_err(|e| DagError::Stage { stage: name.into(), reason: format!("spawn_group: {}", e) })?;
             Ok(StageHandle::Replicas(group))
         }

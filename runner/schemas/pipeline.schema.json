@@ -61,6 +61,11 @@
         "cache_default_mode": {
           "type": "string",
           "enum": ["use", "refresh", "bypass", "off"]
+        },
+        "path_tokens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Tools re-tokenize absolute paths to $prefix/... in what they emit. false: emit absolute paths. Stages override it with their own path_tokens."
         }
       }
     },
@@ -111,6 +116,10 @@
           "type": "string",
           "enum": ["use", "refresh", "bypass", "off"],
           "description": "Per-stage cache mode override. Default: pipeline-level cache_default_mode."
+        },
+        "path_tokens": {
+          "type": "boolean",
+          "description": "Per-stage override of settings.path_tokens. false: this stage emits absolute paths instead of $prefix/... tokens."
         },
         "on_error": {
           "type": "string",

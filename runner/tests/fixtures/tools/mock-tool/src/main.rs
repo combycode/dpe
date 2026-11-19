@@ -47,6 +47,9 @@ struct Settings {
     emit_shutdown_meta: bool,
     #[serde(default)]
     fail_on_startup: bool,
+    /// Copy these environment variables into `v._env` (runner wiring tests).
+    #[serde(default)]
+    echo_env: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -112,6 +115,17 @@ fn main() {
         if settings.transform != Transform::None {
             if let Some(v) = env.get_mut("v") {
                 apply_transform(v, settings.transform);
+            }
+        }
+
+        // Echo requested env vars into v._env
+        if !settings.echo_env.is_empty() {
+            if let Some(Value::Object(v)) = env.get_mut("v") {
+                let mut m = serde_json::Map::new();
+                for k in &settings.echo_env {
+                    m.insert(k.clone(), std::env::var(k).map(Value::String).unwrap_or(Value::Null));
+                }
+                v.insert("_env".into(), Value::Object(m));
             }
         }
 
