@@ -75,6 +75,7 @@
         },
         "shard_depth": {
           "type": "integer",
+          "minimum": 0,
           "default": 2,
           "description": "Reserved: accepted, has no effect yet (dpe warns when it is set to a non-default value)."
         }

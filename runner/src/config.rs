@@ -45,8 +45,8 @@ pub struct RunnerConfig {
     pub spawn: SpawnConfig,
     #[serde(default)]
     pub lifecycle: LifecycleConfig,
-    /// Settings consumed by dpe-dev (workspace location, frameworks cache).
-    /// Ignored by the runner itself.
+    /// `[dev]`: `workspace` is written by `dpe-dev setup`; neither key is read yet
+    /// (`frameworks_cache` is reserved, see `inert_settings`).
     #[serde(default)]
     pub dev: DevConfig,
     /// Tool registry files. Each entry is a path to a `catalog.json`-shaped
@@ -139,7 +139,7 @@ pub struct DevConfig {
     /// Workspace directory created by `dpe-dev setup`.
     #[serde(default)]
     pub workspace: Option<String>,
-    /// Where framework bundles are extracted on first scaffold.
+    /// Reserved: accepted, has no effect (see `inert_settings`).
     #[serde(default)]
     pub frameworks_cache: Option<String>,
 }
