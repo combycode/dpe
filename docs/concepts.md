@@ -183,7 +183,7 @@ PENDING ──┬──► RUNNING ──┬──► SUCCEEDED
 | `pending` | Stage is wired but no envelope has arrived yet | Initial state for every stage |
 | `running` | At least one input envelope seen and stage hasn't exited | Derived from `rows_in > 0` (no separate event) |
 | `succeeded` | Spawned child exited 0, OR builtin task returned `Ok(_)` | Observed when child reaped at end-of-run, or builtin wiring task completes |
-| `failed` | Child exited non-zero, builtin returned `Err(_)`, OR `errors > 0` at terminal time | Same hooks as `succeeded`, opposite outcome |
+| `failed` | Child exited non-zero or was killed, builtin returned `Err(_)`, or the stage stopped the run with `on_error: fail`. Errors reported with `ctx.error` alone do not fail a stage that exits 0 (they only fail stages still non-terminal at end-of-run reconciliation) | Same hooks as `succeeded`, opposite outcome |
 | `cancelled` | User-initiated stop reached this stage before it finished | Reconciliation pass after the executor returns sets any non-terminal stage to this when the run was cancelled |
 
 Pipeline-level state (`idle` / `running` / `paused` / `stopping` /

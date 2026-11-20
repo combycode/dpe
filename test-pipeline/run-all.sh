@@ -26,10 +26,11 @@ fi
 # dpe on PATH (e.g. an older npm release) would silently test something else.
 workspace="$(cd "$SCRIPT_DIR/.." && pwd)"
 candidate="$workspace/target/release/dpe"
+# The .exe only on Windows: in a Linux container over a mounted Windows checkout the .exe looks
+# executable but cannot run there (the container's own dpe on PATH is the one to use).
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) candidate="$candidate.exe" ;; esac
 if [ -n "${DPE_BIN:-}" ]; then
     DPE="$DPE_BIN"
-elif [ -x "$candidate.exe" ]; then
-    DPE="$candidate.exe"
 elif [ -x "$candidate" ]; then
     DPE="$candidate"
 elif command -v dpe >/dev/null 2>&1; then

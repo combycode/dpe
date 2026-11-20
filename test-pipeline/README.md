@@ -27,10 +27,11 @@ test-pipeline/
 ## Running
 
 ```bash
-# From the monorepo root after `cargo build --release -p dpe`:
+# From the monorepo root after `cargo build --release --workspace` (dpe + the standard tools);
+# uses this checkout's target/release/dpe, else a dpe on PATH:
 ./test-pipeline/run-all.sh
 
-# Or with an explicit binary:
+# Or with an explicit binary (06-errors-port needs dpe 2.2.0 or later):
 DPE_BIN=/opt/dpe/bin/dpe ./test-pipeline/run-all.sh
 
 # One-off for a single variant:

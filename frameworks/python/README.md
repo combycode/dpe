@@ -77,7 +77,7 @@ until every queue is empty.
 | `ctx.output(v, id=None, src=None)` | Emit `{t:"d",...}` to stdout. `id`/`src` default to inherit. |
 | `ctx.emit(queue, v)` | Push to internal queue, processed by `process_<queue>`. |
 | `ctx.drain()` | Block until all queues are empty. |
-| `ctx.error(v, err, extra?)` | Write `{type:"error",input:v,error,...}` to stderr; optional `extra` `{code, retryable, details}` (`code` defaults to `err.code` / the error class name). Reaches the stage's `errors` port. |
+| `ctx.error(v, err, extra?)` | Write `{type:"error",input:v,error,...}` to stderr; optional `extra` `{code, retryable, details}` (`code` defaults to `err.code`, else the exception class name unless it is plain `Exception`; also as keywords `code=`, `retryable=`, `details=`). Reaches the stage's `errors` port. |
 | `ctx.log(level, msg)` | Structured stderr log. |
 | `ctx.meta(v)` | Emit `{t:"m", v}` envelope to stdout. |
 | `ctx.memory` | Typed accumulators: `Number`, `Average`, `MinMax`, `Set`, `Map`, `Buffer`, `Boolean`, `BitMask`, `Trigger`. |

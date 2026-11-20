@@ -87,7 +87,8 @@ Fields:
 - `input` — the original `v` that caused the error (preserved for reprocessing)
 - `id` / `src` — envelope identity
 - `code` / `retryable` / `details` — optional, from `ctx.error(v, err, extra)` (`code` defaults to the
-  error's own code or class name in TS / Python)
+  error's own `code`, else its name in TS (not plain `Error`) / its class name in Python (not plain
+  `Exception`))
 - `raw` — instead of `input` / `id` / `src`: the start (4096 characters) of a stdin line that was not
   an envelope
 

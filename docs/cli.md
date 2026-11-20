@@ -111,7 +111,7 @@ per line.
   "marker":["succeeded",4,4,0,0],
   ...
 }}
-{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","stagesRun":4,"stagesSucceeded":4,"stagesFailed":0,"durationMs":551,"failed":false,"failedOnError":null}
+{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","sessionDir":"...","stagesRun":4,"stagesSucceeded":4,"stagesFailed":0,"durationMs":551,"failed":false,"failedOnError":null}
 ```
 
 Used by editors and automation to capture session metadata + final
@@ -146,11 +146,11 @@ come from child exit codes (single/replicas) or builtin task results
 - `0` — no stage failed. Errors a tool reported with `ctx.error` do **not** change the exit code
   (they are data: `<stage>_errors.log`, the stage's [errors port](writing-pipelines.md#9-errors-port-and-on_error),
   the `errors` counter, journal state `partial`).
-- `1` — a stage failed: a tool crashed or exited non-zero, or a stage with `on_error: fail` stopped
+- `1` — a stage failed (validation errors and a run that cannot start also exit 1, so check the
+  summary line / `--json` summary to tell them apart): a tool crashed or exited non-zero, or a stage with `on_error: fail` stopped
   the run. The summary line reads `[FAILED]` instead of `[OK]` (plus the reason for `on_error: fail`),
-  and the `--json` summary carries `"failed": true` and `"failedOnError"`. Before 2.2 this case exited
+  and the `--json` summary carries `"failed": true` and `"failedOnError"`. Before 2.2.0 this case exited
   0 with `[OK] ... 1 failed`.
-- non-zero — validation failed before the run, or the run could not start.
 
 ---
 

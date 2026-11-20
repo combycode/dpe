@@ -11,11 +11,6 @@ stages:
     settings: { format: ndjson }
     input: $input
 
-  data-sink:
-    tool: write-file-stream
-    settings: { default_file: "$output/errors-port-data.ndjson", format: ndjson }
-    input: read
-
   dead-letters:
     tool: write-file-stream
     settings: { default_file: "$output/errors-port.ndjson", format: ndjson }

@@ -39,7 +39,7 @@ events.
 }}
 
 // 5. ALWAYS last. Pipeline lifecycle end.
-{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","stagesRun":2,"stagesSucceeded":2,"stagesFailed":0,"durationMs":...,"failed":false,"failedOnError":null}
+{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","sessionDir":"...","stagesRun":2,"stagesSucceeded":2,"stagesFailed":0,"durationMs":...,"failed":false,"failedOnError":null}
 ```
 
 ### Per-stage 5-tuple

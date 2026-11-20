@@ -254,31 +254,36 @@ stages:
 ```
 
 Each envelope on the port is `{t:"d", id, src, v:{error, input}}`: `id` / `src` are those of the
-failed input, `v.input` is its original `v`, and `v.error` is
-`{message, stage, tool, code?, retryable?, details?, raw?}`. The optional fields come from
-`ctx.error(v, err, {code, retryable, details})` (see [frameworks](frameworks.md)); `raw` is the start
-of an input line that was not an envelope (then `v.input` is `null`). Tools built with older SDKs work
-as is - their envelopes just lack the optional fields.
+failed input, `v.input` is the value the tool passed to `ctx.error` (usually the input's `v`; a tool
+may pass something more useful, e.g. read-file-stream passes `{path, line, raw}` for a bad line of a
+file it reads), and `v.error` is `{message, stage, tool, code?, retryable?, details?, raw?}`. The
+optional fields come from `ctx.error(v, err, {code, retryable, details})` (see
+[frameworks](frameworks.md)); `raw` is the start of a stdin line that was not an envelope - then
+`v.input` is `null` and `id` / `src` are empty. Tools built with older SDKs work as is - their
+envelopes just lack the optional fields.
 
 - Without a consumer of `x.errors` nothing changes. The errors log is written either way.
 - Several stages may read one errors port; replicas of a stage share one port.
 - Only tool stages have the port. A **route** stage keeps its own channels, including one named
-  `errors`; filter / dedup / group-by have none (`dpe check` rejects `filter_stage.errors`).
+  `errors`; the other builtins (filter, dedup, group-by, spread, toggle) have none - `dpe check`
+  rejects `filter_stage.errors`.
 
 `on_error` on a tool stage decides what else happens to a failed input:
 
 | `on_error` | Effect |
 |---|---|
 | `drop` (default) | as above: errors log (+ errors port when consumed), input dropped |
-| `pass` | the failed input also goes on downstream on the stage's data output, unchanged |
-| `fail` | the first error stops the run: every stage is stopped at once and `dpe run` exits 1 |
+| `pass` | the value reported with the error (`v.input` above) also goes on downstream on the stage's data output as `{t:"d", id, src, v}`; nothing is passed for a line that was not an envelope |
+| `fail` | the first error stops the run: every stage is killed at once (no grace - a sink may leave its last write unflushed), terminal output produced so far is kept, every killed stage counts as failed, and `dpe run` exits 1 |
 
 Retries are not built in: route the errors port into your own retry branch or queue
 (`v.error.retryable` / `v.error.code` tell what is worth retrying).
 
 ### 10. Combining all of them
 
-Variant `15-heavy-pipeline.yaml` (in `test-pipeline/`) combines scan + dual-source + fan-in + replicas + filter + route + per-channel transforms + fan-in rejoin in 17 stages. See [examples](examples/README.md#tier-4-full-etl).
+The patterns compose freely: a scan feeding two sources, fan-in, replicas, a filter and a route
+with per-channel transforms that rejoin, with an errors port on any tool stage. The variants under
+`test-pipeline/standard/variants/` are small runnable examples of each building block.
 
 ## Variants and inheritance
 

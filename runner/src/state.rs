@@ -5,8 +5,9 @@
 //! State transitions are driven by the dag executor:
 //!   pending → running    when first envelope flows (rows_in > 0)
 //!   running → succeeded  when child exit collected with code 0
-//!   running → failed     when child exits non-zero, builtin task returns Err,
-//!     or counters report errors > 0
+//!   running → failed     when child exits non-zero / is killed, builtin task returns
+//!     Err, or the stage stopped the run with `on_error: fail` (ctx.error alone does not
+//!     fail a stage that exits 0; it only fails stages still non-terminal at reconcile)
 //!   * → cancelled        when graceful_stop is initiated before the stage
 //!     had reached a terminal state
 //!
@@ -37,8 +38,8 @@ pub enum StageState {
     Running,
     /// Child process exited 0 OR builtin task returned Ok.
     Succeeded,
-    /// Child process exited non-zero, builtin task returned Err, or
-    /// counters reported errors > 0 at terminal time.
+    /// Child process exited non-zero or was killed, builtin task returned Err, or the stage
+    /// stopped the run with `on_error: fail`.
     Failed,
     /// User-initiated stop reached this stage before it could finish.
     Cancelled,
