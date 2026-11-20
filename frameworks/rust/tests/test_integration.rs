@@ -315,3 +315,39 @@ fn runtime_resolve_passes_expanded_paths_to_processor() {
     assert_eq!(resolved["path"],  "/mnt/drive/data.csv");
     assert_eq!(resolved["extra"], 99);
 }
+
+/// ctx.error_with: the optional detail rides along with id/src of the current input.
+#[test]
+fn context_error_with_writes_code_retryable_details() {
+    let mut memory = Memory::new();
+    let mut queue: Vec<QueueItem> = Vec::new();
+    let mut stdout_buf: Vec<u8> = Vec::new();
+    let mut stderr_buf: Vec<u8> = Vec::new();
+    {
+        let mut ctx = Context::new(
+            "id-1".to_string(), "src-1".to_string(),
+            &mut memory, &mut queue,
+            &mut stdout_buf, &mut stderr_buf, EnvPaths::default(),
+        );
+        ctx.error_with(&json!({"x": 1}), "rate limited", combycode_dpe::envelope::ErrorExtra {
+            code: Some("429".into()), retryable: Some(true), details: Some(json!({"after": 2})),
+        });
+    }
+    let ev: Value = serde_json::from_str(String::from_utf8(stderr_buf).unwrap().trim()).unwrap();
+    assert_eq!((ev["id"].clone(), ev["src"].clone()), (json!("id-1"), json!("src-1")));
+    assert_eq!((ev["code"].clone(), ev["retryable"].clone(), ev["details"].clone()),
+               (json!("429"), json!(true), json!({"after": 2})));
+    assert!(stdout_buf.is_empty());
+}
+
+/// raw keeps the first 4096 characters (not bytes); a BOM before an envelope is not data.
+#[test]
+fn bad_input_raw_counts_characters_and_bom_is_skipped() {
+    let mut buf = Vec::new();
+    let cyr = "ж".repeat(5000);                 // 2 bytes per char
+    envelope::write_bad_input(&cyr, "invalid JSON", &mut buf);
+    let ev: Value = serde_json::from_str(String::from_utf8(buf).unwrap().trim()).unwrap();
+    assert_eq!(ev["raw"].as_str().unwrap().chars().count(), envelope::RAW_LINE_LIMIT);
+    assert!(matches!(envelope::parse_input_line("\u{feff}{\"t\":\"d\",\"id\":\"a\",\"src\":\"s\",\"v\":1}"),
+                     envelope::InputLine::Envelope(_)));
+}

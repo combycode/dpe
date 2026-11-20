@@ -159,3 +159,23 @@ def test_schema_rejects_malformed_events(validator):
         validator.validate({"type": "error", "error": "x"})
     with pytest.raises(jsonschema.ValidationError):
         validator.validate({"type": "mystery"})
+
+
+def test_bom_and_raising_code_property():
+    assert env.parse_input_line('﻿{"t":"d","id":"a","src":"s","v":1}')[0] == "envelope"
+
+    class Weird(Exception):
+        @property
+        def code(self):
+            raise RuntimeError("no code here")
+
+    events = capture_stderr(lambda: env.write_error({}, Weird("w"), "id", "src"))
+    assert events[0]["code"] == "Weird"   # falls back to the class name
+
+
+def test_schema_rejects_bad_new_fields(validator):
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate({"type": "error", "error": "x", "input": 1, "id": "a", "src": "b",
+                            "retryable": "yes"})
+    with pytest.raises(jsonschema.ValidationError):
+        validator.validate({"type": "error", "error": "x", "raw": "y" * 4097})

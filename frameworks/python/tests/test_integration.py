@@ -711,3 +711,16 @@ class TestBadInputLines:
         errs = [e for e in stderr if e.get("type") == "error"]
         assert [(e["id"], e.get("code"), e.get("retryable")) for e in errs] == [
             ("a", "E_ROW", False), ("b", "Throttled", None)]
+
+    def test_ctx_error_extra_as_positional_dict(self):
+        _, _, stderr = run_tool_code("""
+            import dpe
+
+            def process_input(v, settings, ctx):
+                ctx.error(v, "bad", {"code": 404, "details": {"why": "x"}})
+
+            if __name__ == "__main__":
+                dpe.run()
+        """, {}, [inp({"x": 1}, id="a")])
+        errs = [e for e in stderr if e.get("type") == "error"]
+        assert [(e["code"], e["details"]) for e in errs] == [("404", {"why": "x"})]

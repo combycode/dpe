@@ -45,7 +45,8 @@ pub enum InputLine {
 
 /// Classify one stdin line. A line that is not a JSON object used to be skipped silently.
 pub fn parse_input_line(line: &str) -> InputLine {
-    let trimmed = line.trim();
+    // A leading byte-order mark (first line of a file written by some editors) is not data.
+    let trimmed = line.trim_start_matches('\u{feff}').trim();
     if trimmed.is_empty() {
         return InputLine::Empty;
     }
@@ -139,8 +140,8 @@ pub fn write_error_with(v: &Value, err: &str, id: &str, src: &str, extra: &Error
 /// An input line that is not an envelope: reported instead of being skipped silently.
 pub fn write_bad_input(line: &str, reason: &str, err_out: &mut dyn Write) {
     let line = line.trim_end_matches(['\r', '\n']);
-    let mut end = line.len().min(RAW_LINE_LIMIT);
-    while !line.is_char_boundary(end) { end -= 1; }
+    // First RAW_LINE_LIMIT characters (not bytes), like the TS / Python frameworks.
+    let end = line.char_indices().nth(RAW_LINE_LIMIT).map_or(line.len(), |(i, _)| i);
     let record = serde_json::json!({
         "type": "error",
         "error": format!("unparseable input line: {reason}"),

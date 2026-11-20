@@ -88,7 +88,7 @@ class Runtime implements RuntimeLike {
     for await (const line of readStdinLines()) {
       if (this.shutdown) break;
 
-      const parsed = parseInputLine(line);
+      const parsed = parseInputLine(line, acceptMeta);
       if (parsed.kind === 'bad') {
         // Not an envelope: report it (the runner routes it to the stage's errors port).
         writeBadInput(line, parsed.reason);

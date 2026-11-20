@@ -260,6 +260,30 @@ describe('runtime stdin loop', () => {
     expect(errs.every((e) => e.error.startsWith('unparseable input line'))).toBe(true);
   });
 
+  test('raw is cut on whole characters; malformed meta ignored without accept_meta', async () => {
+    const script = `
+            import { run } from "${FRAMEWORK_DIR}/src/index.ts";
+            await run({ input: (v, _s, ctx) => ctx.output(v) });
+        `;
+    // A non-JSON line whose 4096th UTF-16 unit is the first half of an emoji.
+    const long = `x${'a'.repeat(4094)}😀tail`;
+    const input = [long, '{"t":"m"}', '{"t":"d","id":"b","src":"s","v":{"x":2}}'].join('\n');
+    const { stderr } = await runTool(script, {}, input);
+    const errs = parseLines(stderr).filter((e) => e.type === 'error');
+    expect(errs.length).toBe(1); // the meta line is skipped, not reported
+    expect([...errs[0]!.raw].length).toBe(4096);
+    expect(errs[0]!.raw.endsWith('😀')).toBe(true);
+  });
+
+  test('DOMException code comes from its name, not the legacy number', async () => {
+    const script = `
+            import { writeError } from "${FRAMEWORK_DIR}/src/envelope.ts";
+            writeError({}, new DOMException("timed out", "TimeoutError"), "a", "s");
+        `;
+    const { stderr } = await runTool(script, {}, '');
+    expect(parseLines(stderr)[0]!.code).toBe('TimeoutError');
+  });
+
   test('ctx.error extra and an exception code reach the error event', async () => {
     const script = `
             import { run } from "${FRAMEWORK_DIR}/src/index.ts";

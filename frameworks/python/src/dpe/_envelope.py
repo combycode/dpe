@@ -92,7 +92,8 @@ def parse_input_line(line: str) -> tuple[str, Any]:
     Returns ("empty", None), ("envelope", dict) or ("bad", reason) - "bad" when the line is
     not valid JSON or not a JSON object (such a line used to be skipped, or crashed the loop).
     """
-    line = line.strip()
+    # A leading byte-order mark (first line of a file written by some editors) is not data.
+    line = line.lstrip("﻿").strip()
     if not line:
         return "empty", None
     try:
@@ -109,7 +110,10 @@ def _error_code(err) -> str | None:
 
     A plain `Exception` gives no code.
     """
-    code = getattr(err, "code", None)
+    try:
+        code = getattr(err, "code", None)
+    except Exception:  # a `code` property that raises must not take the tool down
+        code = None
     if isinstance(code, (str, int, float)) and not isinstance(code, bool):
         return str(code)
     if isinstance(err, BaseException) and type(err) is not Exception:

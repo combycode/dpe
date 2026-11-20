@@ -84,8 +84,8 @@ fn error_with_extra_and_bad_input_validate_against_schema() {
     };
     envelope::write_error_with(&json!({"k": 1}), "bad", "id1", "src1", &extra, &mut buf);
     envelope::write_error_with(&json!({"k": 2}), "plain", "id2", "src2", &envelope::ErrorExtra::default(), &mut buf);
-    // 4097 bytes with a multi-byte char straddling the limit: cut on a char boundary.
-    let long = format!("{{not json{}é", "x".repeat(4086));
+    // 4097 characters ending in a multi-byte one: cut to 4096 whole characters.
+    let long = format!("{{not json{}éé", "x".repeat(4086));
     envelope::write_bad_input(&format!("{long}\n"), "invalid JSON", &mut buf);
     let events = parse_lines(&buf);
     assert_eq!(events.len(), 3);
@@ -93,7 +93,8 @@ fn error_with_extra_and_bad_input_validate_against_schema() {
     assert_eq!((events[0]["code"].clone(), events[0]["retryable"].clone()), (json!("E_BAD"), json!(true)));
     assert!(events[1].get("code").is_none());
     let raw = events[2]["raw"].as_str().unwrap();
-    assert!(raw.len() <= envelope::RAW_LINE_LIMIT && raw.starts_with("{not json"));
+    assert_eq!(raw.chars().count(), envelope::RAW_LINE_LIMIT);
+    assert!(raw.starts_with("{not json") && raw.ends_with('é') && !raw.ends_with("éé"));
     assert!(events[2].get("input").is_none());
 }
 
@@ -195,4 +196,17 @@ fn malformed_event_fails_schema_validation() {
 
     let unknown_type = json!({"type": "mystery", "msg": "x"});
     assert!(!schema.is_valid(&unknown_type), "schema should reject unknown event type");
+}
+
+#[test]
+fn schema_rejects_bad_new_error_fields() {
+    let schema = load_schema();
+    for bad in [
+        json!({"type": "error", "error": "x", "input": 1, "id": "a", "src": "b", "code": 5}),
+        json!({"type": "error", "error": "x", "input": 1, "id": "a", "src": "b", "retryable": "yes"}),
+        json!({"type": "error", "error": "x", "raw": "y".repeat(4097)}),
+        json!({"type": "error", "error": "x"}),
+    ] {
+        assert!(!schema.is_valid(&bad), "schema accepted {bad}");
+    }
 }

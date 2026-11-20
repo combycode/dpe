@@ -64,19 +64,24 @@ export function parseEnvelope(line: string): Envelope | null {
   try {
     const obj = JSON.parse(trimmed);
     if (!obj || typeof obj !== 'object') return null;
-    if (obj.t === 'd') {
-      if (typeof obj.id !== 'string' || typeof obj.src !== 'string') return null;
-      if (!('v' in obj)) return null;
-      return obj as DataEnvelope;
-    }
-    if (obj.t === 'm') {
-      if (!('v' in obj)) return null;
-      return obj as MetaEnvelope;
-    }
-    return null;
+    return asEnvelope(obj);
   } catch {
     return null;
   }
+}
+
+/** The parsed object as a well-formed data / meta envelope, or null. */
+function asEnvelope(obj: { t?: unknown; id?: unknown; src?: unknown }): Envelope | null {
+  if (obj.t === 'd') {
+    if (typeof obj.id !== 'string' || typeof obj.src !== 'string') return null;
+    if (!('v' in obj)) return null;
+    return obj as DataEnvelope;
+  }
+  if (obj.t === 'm') {
+    if (!('v' in obj)) return null;
+    return obj as MetaEnvelope;
+  }
+  return null;
 }
 
 /** What one stdin line is, for the runtime's input loop. */
@@ -88,7 +93,9 @@ export type InputLine =
   /** Not an envelope: invalid JSON, not an object, or a data / meta envelope missing fields. */
   | { kind: 'bad'; reason: string };
 
-export function parseInputLine(line: string): InputLine {
+/** `acceptMeta`: whether the tool takes meta envelopes; if not, a malformed one is skipped
+ *  like any meta envelope rather than reported. */
+export function parseInputLine(line: string, acceptMeta = false): InputLine {
   const trimmed = line.trim();
   if (!trimmed) return { kind: 'empty' };
   let obj: unknown;
@@ -100,12 +107,12 @@ export function parseInputLine(line: string): InputLine {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
     return { kind: 'bad', reason: 'not a JSON object' };
   }
-  const env = parseEnvelope(trimmed);
+  const env = asEnvelope(obj as { t?: unknown });
   if (env) return { kind: 'envelope', env };
   const t = (obj as { t?: unknown }).t;
   if (t === 'd')
     return { kind: 'bad', reason: 'data envelope without string id / src or without v' };
-  if (t === 'm') return { kind: 'bad', reason: 'meta envelope without v' };
+  if (t === 'm' && acceptMeta) return { kind: 'bad', reason: 'meta envelope without v' };
   return { kind: 'other' };
 }
 
@@ -124,6 +131,9 @@ export const RAW_LINE_LIMIT = 4096;
 
 function errorCode(err: unknown): string | undefined {
   if (err && typeof err === 'object') {
+    // DOMException's numeric `code` is a legacy constant (TimeoutError → 23); its name is
+    // the meaningful part (fetch timeouts and aborts arrive as DOMException).
+    if (typeof DOMException !== 'undefined' && err instanceof DOMException) return err.name;
     const code = (err as { code?: unknown }).code;
     if (typeof code === 'string' || typeof code === 'number') return String(code);
     if (err instanceof Error && err.name && err.name !== 'Error') return err.name;
@@ -169,7 +179,9 @@ export function writeBadInput(line: string, reason: string): void {
   _writeStderr({
     type: 'error',
     error: `unparseable input line: ${reason}`,
-    raw: line.slice(0, RAW_LINE_LIMIT),
+    // Cut by code points: a UTF-16 slice can split a surrogate pair, and a lone surrogate
+    // makes the whole event unreadable for the runner.
+    raw: Array.from(line).slice(0, RAW_LINE_LIMIT).join(''),
   });
 }
 
