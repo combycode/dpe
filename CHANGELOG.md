@@ -8,11 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+## [2.2.0] — 2026-11-20
+
+Minor release: tool failures can flow on as data (the `errors` port), `on_error` works for tool stages, and the SDKs report more about an error. One behaviour change: `dpe run` now exits 1 when a stage failed (see Changed).
+
 ### Added
 
 - **`errors` port on tool stages.** `input: <stage>.errors` receives one envelope per error the stage reports (`ctx.error`, or an exception caught by the SDK): `{t:"d", id, src, v:{error:{message, stage, tool, code?, retryable?, details?}, input}}`, with the failed input's `id` / `src`. Works with existing tool binaries. Several stages may read one port; replicas merge into it. The stage's `<stage>_errors.log` is still written. Without a consumer nothing changes. A route stage's own channel named `errors` keeps working as before.
-- **`on_error` now applies to tool stages** (it was honoured by route / filter only): `drop` (default, as before), `pass` (the failed input goes on downstream unchanged), `fail` (the first error stops the run).
-- **SDKs: error detail.** `ctx.error(v, err, extra)` takes optional `code`, `retryable` and `details` (TypeScript and Python; Python also as keywords; Rust: `ctx.error_with(v, err, ErrorExtra { .. })`, `ctx.error` unchanged). TypeScript and Python fill `code` from `err.code`, else the error's class name. The fields reach the stage's `errors` port and errors log; older runners ignore them.
+- **`on_error` now applies to tool stages** (it was honoured by route / filter only): `drop` (default, as before), `pass` (the value reported with the error - usually the failed input - goes on downstream), `fail` (the first error stops the run).
+- **SDKs: error detail.** `ctx.error(v, err, extra)` takes optional `code`, `retryable` and `details` (TypeScript and Python; Python also as keywords; Rust: `ctx.error_with(v, err, ErrorExtra { .. })`, `ctx.error` unchanged). When `code` is not given it defaults to `err.code`, else `err.name` in TypeScript (not plain `Error`) / the exception class name in Python (not plain `Exception`). The fields reach the stage's `errors` port and errors log; older runners ignore them.
 - **SDKs: a stdin line that is not an envelope is reported** as an error event with `raw` (its first 4096 characters) instead of being skipped silently (all three SDKs; in Python a valid-JSON non-object line used to crash the tool). TypeScript also reports data envelopes with missing fields (and meta ones, for tools with `accept_meta`), which it used to drop. Lines with an unknown `t` are still skipped; a leading byte-order mark is ignored in all three. So an upstream tool that prints plain text on stdout now produces one error per such line downstream - and with `on_error: fail` on the downstream stage, the first one stops the run.
 
 ### Changed
@@ -163,6 +167,7 @@ No breaking changes; existing pipelines and config files work unchanged.
 
 - **All v1.x.** `combycode/dpe` v1.x is end-of-life as of v2.0.0. No security backports.
 
-[Unreleased]: https://github.com/combycode/dpe/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/combycode/dpe/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/combycode/dpe/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/combycode/dpe/compare/v2.0.4...v2.1.0
 [2.0.0]: https://github.com/combycode/dpe/releases/tag/v2.0.0
