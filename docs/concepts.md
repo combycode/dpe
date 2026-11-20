@@ -50,9 +50,9 @@ One **node** in the DAG. Has a name, a tool reference, optional settings, and an
 my-stage:
   tool:      normalize                  # resolver looks up this name
   settings:  { rules: "$configs/rules.yaml" } # serialised to JSON on argv[1]
-  input:     scan                       # name of upstream stage, OR "$input", OR route.channel, OR [list]
+  input:     scan                       # upstream stage, OR "$input", OR route.channel, OR tool.errors, OR [list]
   replicas:  1                          # optional: spawn N copies
-  on_error:  drop                       # drop | pass | fail (how to handle child exit)
+  on_error:  drop                       # drop | pass | fail: what happens to inputs the tool reports as failed
 ```
 
 The runner spawns one OS process per stage (or N per replica group), pipes stages together, captures stderr for classification, and shuts everything down cleanly.
@@ -204,7 +204,7 @@ Every stage tracks four counters in memory (`StageCounters` in
 | `rows_in` | `{"type":"input"}` events on stage stderr | Envelopes the stage **received** from stdin. The framework emits `input` once per parsed stdin envelope, before `process_input` runs. Lights up for terminal sinks (no `ctx.output()`) and pass-through tools — invisible to a `rows_out`-only counter |
 | `rows_out` | `{"type":"trace", "channel":"data"}` (or unset channel) | Data envelopes **emitted** to stdout. Runner counts `ctx.output()` via the trace event. `channel:"data"` is the new-tools default; missing `channel` is treated as data for backward compat |
 | `meta` | `{"type":"trace", "channel":"meta"}` | Meta envelopes emitted via `ctx.meta()`. Separate counter so meta noise doesn't inflate `rows_out` for tools that emit summaries |
-| `errors` | `{"type":"error"}` | Errors emitted via `ctx.error()`. Persisted to `<session>/logs/<stage>_errors.log` with `t` and `sid` injected by the runner |
+| `errors` | `{"type":"error"}` | Errors emitted via `ctx.error()` (also an exception in the processor, or a stdin line that is not an envelope). Persisted to `<session>/logs/<stage>_errors.log` with `t` and `sid` injected by the runner; emitted as envelopes on the stage's [errors port](writing-pipelines.md#9-errors-port-and-on_error) when it is consumed |
 
 Builtins (route / filter / dedup / group-by) feed into the same
 counters from in-process executor wiring, not via stderr.

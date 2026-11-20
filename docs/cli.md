@@ -62,6 +62,8 @@ set); a stage's own `cache:` wins over all of them. Default mode prints a one-li
 [OK] my-pipeline:main — 4 stage(s), 4 succeeded, 0 failed, 14490ms
 ```
 
+`[FAILED]` instead of `[OK]` (and exit code 1) when a stage failed - see [exit codes](#exit-codes).
+
 ### Seed input (`--seed`, `--seed-file`)
 
 Two ways to inject the run's first envelope:
@@ -109,7 +111,7 @@ per line.
   "marker":["succeeded",4,4,0,0],
   ...
 }}
-{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","stagesRun":4,"stagesSucceeded":4,"stagesFailed":0,"durationMs":551}
+{"event":"summary","sessionId":"...","pipeline":"...","variant":"...","stagesRun":4,"stagesSucceeded":4,"stagesFailed":0,"durationMs":551,"failed":false,"failedOnError":null}
 ```
 
 Used by editors and automation to capture session metadata + final
@@ -141,9 +143,14 @@ come from child exit codes (single/replicas) or builtin task results
 
 ### Exit codes
 
-- `0` — every stage succeeded AND `errors == 0` across the board
-- non-zero — at least one stage exited non-zero, or validation failed
-  pre-run
+- `0` — no stage failed. Errors a tool reported with `ctx.error` do **not** change the exit code
+  (they are data: `<stage>_errors.log`, the stage's [errors port](writing-pipelines.md#9-errors-port-and-on_error),
+  the `errors` counter, journal state `partial`).
+- `1` — a stage failed: a tool crashed or exited non-zero, or a stage with `on_error: fail` stopped
+  the run. The summary line reads `[FAILED]` instead of `[OK]` (plus the reason for `on_error: fail`),
+  and the `--json` summary carries `"failed": true` and `"failedOnError"`. Before 2.2 this case exited
+  0 with `[OK] ... 1 failed`.
+- non-zero — validation failed before the run, or the run could not start.
 
 ---
 

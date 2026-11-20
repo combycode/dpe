@@ -104,6 +104,15 @@ for variant_file in "$PIPE_DIR/variants"/*.yaml; do
     fi
 done
 
+# 06-errors-port: the dead-letter file must hold one error envelope per seed envelope.
+dl="$SCRIPT_DIR/standard/data/output/errors-port.ndjson"
+seeds=$(grep -c . "$SCRIPT_DIR/standard/data/input/_seed.ndjson")
+got=$(grep -c '"stage":"read"' "$dl" 2>/dev/null || true)
+if [ "$got" != "$seeds" ] || ! grep -q '"message":"missing ' "$dl"; then
+    echo "[run-all] FAIL -- 06-errors-port: $dl has ${got:-0} error envelopes, want $seeds" >&2
+    fail=$((fail+1)); failures+=("06-errors-port (content)")
+fi
+
 echo
 echo "[run-all] $pass passed, $fail failed"
 if [ $fail -gt 0 ]; then

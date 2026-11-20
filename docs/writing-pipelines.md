@@ -46,12 +46,12 @@ dpe run my-pipeline:main -i /some/dir -o /other/dir
 | `tool` | ✓ | name resolved by the tool resolver |
 | `settings` | if tool needs it | serialised as one JSON string to argv[1] |
 | `settings_file` | alternative to `settings` | path to a JSON file; validator checks existence |
-| `input` | ✓ | `"$input"` / `"stage_name"` / `"route_name.channel"` / `["a","b",...]` |
+| `input` | ✓ | `"$input"` / `"stage_name"` / `"route_name.channel"` / `"tool_stage.errors"` ([errors port](#9-errors-port-and-on_error)) / `["a","b",...]` |
 | `replicas` | default 1 | number of processes for this stage |
 | `replicas_routing` | default `round-robin` | `round-robin` \| `hash-id` \| `least-busy` (deferred) |
 | `trace` | default `true` | reserved — trace is always on today |
 | `cache` | default: the session mode | `use` \| `refresh` \| `bypass` \| `off` — cache mode for this stage's tool (`DPE_CACHE_MODE`) in `dpe run`; wins over `--cache` and the variant's `cache_default_mode` (`dpe test` does not read it) |
-| `on_error` | default `drop` | `drop` \| `pass` \| `fail` — how runner handles child exit-nonzero |
+| `on_error` | default `drop` | `drop` \| `pass` \| `fail` — what happens to an input the stage reports as failed: tool stages see [errors port and `on_error`](#9-errors-port-and-on_error); route / filter: an expression that errors ([builtins](tools/builtins.md)) |
 | `path_tokens` | default: the variant's `settings.path_tokens` (`true`) | `false` makes this stage emit absolute paths instead of `$prefix/...` tokens — see [path prefixes](path-prefixes.md#turning-tokenization-off-path_tokens) |
 | `routes` | route only | map `channel → expression` |
 | `expression` | filter only | predicate expression |
@@ -231,7 +231,52 @@ Truth table:
 
 `value` and `values` are mutually exclusive (one-of match); `env` alone (no `value`/`values`) → matches when env is set to any non-empty value; no `env` → always pass-through (transparent — useful as a placeholder while wiring).
 
-### 9. Combining all of them
+### 9. Errors port and `on_error`
+
+A tool reports a failed input with `ctx.error(v, err)` (an exception thrown by the processor is
+reported the same way, and so is a stdin line that is not an envelope). By default that only lands
+in `<session>/logs/<stage>_errors.log` and the input is gone. Every **tool stage** also has an
+`errors` port, so failures can flow on as data - to a dead-letter sink, a retry branch, a report:
+
+```yaml
+stages:
+  extract:
+    tool: read-file-stream         # reports a missing file / bad line with ctx.error
+    input: $input
+  next:
+    tool: normalize
+    settings: { rulebook: "$configs/rules.yaml" }
+    input: extract                 # data output, unchanged
+  dead-letters:
+    tool: write-file-stream
+    settings: { default_file: "$output/failed.ndjson" }
+    input: extract.errors          # one envelope per error of `extract`
+```
+
+Each envelope on the port is `{t:"d", id, src, v:{error, input}}`: `id` / `src` are those of the
+failed input, `v.input` is its original `v`, and `v.error` is
+`{message, stage, tool, code?, retryable?, details?, raw?}`. The optional fields come from
+`ctx.error(v, err, {code, retryable, details})` (see [frameworks](frameworks.md)); `raw` is the start
+of an input line that was not an envelope (then `v.input` is `null`). Tools built with older SDKs work
+as is - their envelopes just lack the optional fields.
+
+- Without a consumer of `x.errors` nothing changes. The errors log is written either way.
+- Several stages may read one errors port; replicas of a stage share one port.
+- Only tool stages have the port. A **route** stage keeps its own channels, including one named
+  `errors`; filter / dedup / group-by have none (`dpe check` rejects `filter_stage.errors`).
+
+`on_error` on a tool stage decides what else happens to a failed input:
+
+| `on_error` | Effect |
+|---|---|
+| `drop` (default) | as above: errors log (+ errors port when consumed), input dropped |
+| `pass` | the failed input also goes on downstream on the stage's data output, unchanged |
+| `fail` | the first error stops the run: every stage is stopped at once and `dpe run` exits 1 |
+
+Retries are not built in: route the errors port into your own retry branch or queue
+(`v.error.retryable` / `v.error.code` tell what is worth retrying).
+
+### 10. Combining all of them
 
 Variant `15-heavy-pipeline.yaml` (in `test-pipeline/`) combines scan + dual-source + fan-in + replicas + filter + route + per-channel transforms + fan-in rejoin in 17 stages. See [examples](examples/README.md#tier-4-full-etl).
 
@@ -356,7 +401,8 @@ numbers**. The parser will tell you exactly where to add quotes.
 Run `dpe check <pipeline>:<variant>` (or `check --all <pipeline>`) before running. The validator rejects:
 
 - tool name doesn't resolve (not found in any path, not a built-in)
-- `input` references an unknown stage, or a `stage.channel` where the stage isn't a route
+- `input` references an unknown stage, or a `stage.channel` where the stage isn't a route (except
+  `tool_stage.errors`, the [errors port](#9-errors-port-and-on_error))
 - route has zero declared channels
 - filter missing an expression
 - dedup missing a config block

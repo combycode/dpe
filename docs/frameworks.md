@@ -45,7 +45,7 @@ my-tool/
 | `ctx.emit(queue, v, {id?, src?})` | queue a follow-up item handled by `process_<queue>` |
 | `ctx.drain()` | synchronously drain the queue before continuing |
 | `ctx.log(msg, level=info, ...extra)` | write a `{type:"log"}` event to stderr |
-| `ctx.error(v, err)` | write a `{type:"error",error,input,id,src}` event to stderr; runner persists with `t` and `sid` injected, drives `errors` counter |
+| `ctx.error(v, err, extra?)` | write a `{type:"error",error,input,id,src}` event to stderr; runner persists with `t` and `sid` injected, drives `errors` counter, and emits it on the stage's [errors port](writing-pipelines.md#9-errors-port-and-on_error) when consumed. Optional `extra`: `{code, retryable, details}` (Python also as keywords; Rust: `ctx.error_with(v, err, ErrorExtra { .. })`). `code` defaults to `err.code`, else the error's class name (TS / Python) |
 | `ctx.trace(key, value)` | accumulate a label; flushed once as part of the next `ctx.output()`'s trace event |
 | `ctx.stats(data)` | write a `{type:"stats", ...data}` event to stderr (custom counters, not yet routed by runner — TODO) |
 | `ctx.hash(str)` | deterministic 16-hex blake2b of a string |
@@ -264,7 +264,9 @@ All three frameworks have extensive unit tests (Rust 29 / Python 80 / TS 25). If
 - `ctx.output()` emits both a trace event AND the data envelope, in that order
 - Labels cleared after each output
 - EOF on stdin terminates cleanly
-- Malformed stdin line → `ctx.error` + continue, never process crash
+- A stdin line that is not an envelope (invalid JSON, not an object; in TS also a data envelope
+  without `id` / `src` / `v`) → an error event with `raw` (first 4096 characters) + continue, never a
+  crash; empty lines and envelopes with an unknown `t` are skipped
 - `settings` is parsed once at startup and stable across calls
 
 ## Tool lifecycle rules (must-follow)

@@ -13,7 +13,8 @@ test-pipeline/
 │   │   ├── 01-scan-write.yaml       # scan-fs → write-file-stream
 │   │   ├── 02-read-normalize-write.yaml  # read → normalize (uppercase) → write
 │   │   ├── 03-gate-checkpoint.yaml  # gate + checkpoint coordination
-│   │   └── 04-write-hashed.yaml     # write-file-stream-hashed dedup
+│   │   ├── 04-write-hashed.yaml     # write-file-stream-hashed dedup
+│   │   └── 06-errors-port.yaml      # read.errors → dead-letter file (content checked)
 │   ├── configs/
 │   │   └── normalize/uppercase.yaml  # trivial normalize rulebook
 │   ├── data/
@@ -49,6 +50,7 @@ Expected result: every variant exits 0, outputs land in `standard/data/output/`.
 | 02-read-normalize-write | read-file-stream → normalize → write-file-stream |
 | 03-gate-checkpoint | read → gate → checkpoint → write |
 | 04-write-hashed | read → write-file-stream-hashed |
+| 06-errors-port | read's `errors` port → write-file-stream; `run-all.sh` checks one error envelope per seed |
 
 Every envelope in `data/input/_seed.ndjson` is synthesised — zero private data. Safe to commit to a public repo.
 

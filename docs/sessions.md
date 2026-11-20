@@ -82,9 +82,17 @@ Per-stage errors from `ctx.error(v, err)` calls. NDJSON, one event per line:
 
 Fields:
 - `type: "error"` — always
+- `t` / `sid` — time (ms) and stage id, added by the runner
 - `error` — human-readable
 - `input` — the original `v` that caused the error (preserved for reprocessing)
 - `id` / `src` — envelope identity
+- `code` / `retryable` / `details` — optional, from `ctx.error(v, err, extra)` (`code` defaults to the
+  error's own code or class name in TS / Python)
+- `raw` — instead of `input` / `id` / `src`: the start (4096 characters) of a stdin line that was not
+  an envelope
+
+The same errors reach the stage's [errors port](writing-pipelines.md#9-errors-port-and-on_error) as
+envelopes when another stage consumes it; the log is written either way.
 
 Replicas of the same stage share one `_errors.log`. The stream is serialised through the runner's classifier; OS-level atomic appends keep lines intact.
 

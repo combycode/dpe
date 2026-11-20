@@ -81,7 +81,7 @@ runtime drains the queue (`ctx.drain()`) before reading the next stdin line.
 | `ctx.output(v, id, src)` | Emit `{t:"d",...}` to stdout. `id`/`src` default to inherit. |
 | `ctx.emit(queue, v)` | Push to internal queue, processed by `process_<queue>`. |
 | `ctx.drain()` | Block until all queues are empty. |
-| `ctx.error(&v, msg)` | Write `{type:"error",input:v,error:msg,...}` to stderr. |
+| `ctx.error(&v, msg)` / `ctx.error_with(&v, msg, ErrorExtra { .. })` | Write `{type:"error",input:v,error:msg,...}` to stderr; `error_with` adds `code` / `retryable` / `details`. Reaches the stage's `errors` port. |
 | `ctx.log(level, msg)` | Structured stderr log. |
 | `ctx.meta(v)` | Emit `{t:"m", v}` envelope to stdout. |
 | `ctx.memory` | Typed accumulators (`Number`, `Average`, `MinMax`, `Set`, `Map`, …). |

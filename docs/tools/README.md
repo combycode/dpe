@@ -25,7 +25,7 @@ Framework emits these; you write tool code that calls `ctx.*` and the framework 
 | Type | Shape | Emitted by | Runner routes to |
 |---|---|---|---|
 | `trace` | `{"type":"trace","id":"...","src":"...","labels":{...}}` | framework, on every `ctx.output()` | `$session/trace/trace.N.ndjson` |
-| `error` | `{"type":"error","error":"...","input":{...},"id":"...","src":"..."}` | your `ctx.error(v, err)` | `$session/logs/<stage>_errors.log` |
+| `error` | `{"type":"error","error":"...","input":{...},"id":"...","src":"...", "code"?, "retryable"?, "details"?}` (or `raw` instead of input/id/src for a stdin line that was not an envelope) | your `ctx.error(v, err, extra?)`, an exception in your processor, or the framework | `$session/logs/<stage>_errors.log`, and the stage's [errors port](../writing-pipelines.md#9-errors-port-and-on_error) when consumed |
 | `log` | `{"type":"log","level":"info|warn|error","msg":"...", ...extra}` | your `ctx.log(msg, level=...)` | `$session/log.ndjson` + runner stderr (`[stage] level: msg`) |
 | `stats` | `{"type":"stats", ...extra}` | your `ctx.stats({...})` | in-memory StatsCollector (reserved) |
 

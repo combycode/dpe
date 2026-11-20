@@ -1,0 +1,22 @@
+pipeline: standard
+variant: 06-errors-port
+# Errors port: every error a tool stage reports becomes an envelope on `<stage>.errors`.
+# The seed envelopes carry no `path`, so read-file-stream reports each one with ctx.error;
+# the port turns them into {error:{message, stage, tool}, input} envelopes that a sink writes out.
+# run-all.sh checks the file: 4 lines, one per seed envelope.
+# Exercises: errors port, write-file-stream as a dead-letter sink.
+stages:
+  read:
+    tool: read-file-stream
+    settings: { format: ndjson }
+    input: $input
+
+  data-sink:
+    tool: write-file-stream
+    settings: { default_file: "$output/errors-port-data.ndjson", format: ndjson }
+    input: read
+
+  dead-letters:
+    tool: write-file-stream
+    settings: { default_file: "$output/errors-port.ndjson", format: ndjson }
+    input: read.errors
