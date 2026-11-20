@@ -106,9 +106,21 @@ class Context:
         """Write structured log to stderr."""
         write_log(msg, level, extra if extra else None)
 
-    def error(self, v, err):
-        """Write error to stderr with original input preserved."""
-        write_error(v, err, self.id, self.src)
+    def error(self, v, err, extra: dict | None = None, *, code=None, retryable=None, details=None):
+        """Report that this input failed (stderr; the runner writes the stage's errors log).
+
+        Optional `code` / `retryable` / `details` - as keywords or in `extra` - reach the
+        stage's `errors` port when it is consumed. `code` defaults to `err.code`, else the
+        exception's class name.
+        """
+        merged = dict(extra or {})
+        if code is not None:
+            merged["code"] = code
+        if retryable is not None:
+            merged["retryable"] = retryable
+        if details is not None:
+            merged["details"] = details
+        write_error(v, err, self.id, self.src, merged)
 
     def hash(self, key: str) -> str:
         """Hash a string. Returns 16-char hex."""

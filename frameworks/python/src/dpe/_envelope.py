@@ -82,16 +82,72 @@ def write_log(msg: str, level: str, extra: dict | None = None):
     _write_stderr(record)
 
 
-def write_error(v, err, id: str, src: str):
-    """Write error to stderr with original input preserved."""
-    record = {
+RAW_LINE_LIMIT = 4096
+"""Longest start of an unparseable input line kept in its error event."""
+
+
+def parse_input_line(line: str) -> tuple[str, Any]:
+    """Classify one stdin line for the runtime's input loop.
+
+    Returns ("empty", None), ("envelope", dict) or ("bad", reason) - "bad" when the line is
+    not valid JSON or not a JSON object (such a line used to be skipped, or crashed the loop).
+    """
+    line = line.strip()
+    if not line:
+        return "empty", None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError as e:
+        return "bad", f"invalid JSON ({e})"
+    if not isinstance(obj, dict):
+        return "bad", "not a JSON object"
+    return "envelope", obj
+
+
+def _error_code(err) -> str | None:
+    """`err.code` when it is a string / number, else the exception's class name.
+
+    A plain `Exception` gives no code.
+    """
+    code = getattr(err, "code", None)
+    if isinstance(code, (str, int, float)) and not isinstance(code, bool):
+        return str(code)
+    if isinstance(err, BaseException) and type(err) is not Exception:
+        return type(err).__name__
+    return None
+
+
+def write_error(v, err, id: str, src: str, extra: dict | None = None):
+    """Write error to stderr with original input preserved.
+
+    `extra` may carry `code`, `retryable` and `details`; the runner puts them on the stage's
+    `errors` port. `code` defaults to `err.code`, else the exception's class name.
+    """
+    record: dict = {
         "type": "error",
         "error": str(err),
         "input": v,
         "id": id,
         "src": src,
     }
+    extra = extra or {}
+    code = str(extra["code"]) if extra.get("code") is not None else _error_code(err)
+    if code is not None:
+        record["code"] = code
+    if isinstance(extra.get("retryable"), bool):
+        record["retryable"] = extra["retryable"]
+    if "details" in extra:
+        record["details"] = extra["details"]
     _write_stderr(record)
+
+
+def write_bad_input(line: str, reason: str):
+    """An input line that is not an envelope: reported instead of being skipped silently."""
+    _write_stderr({
+        "type": "error",
+        "error": f"unparseable input line: {reason}",
+        "raw": line.rstrip("\r\n")[:RAW_LINE_LIMIT],
+    })
 
 
 def write_trace(id: str, src: str, labels: dict, channel: str | None = None):

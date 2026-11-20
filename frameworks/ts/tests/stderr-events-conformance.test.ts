@@ -144,11 +144,43 @@ describe('stderr event schema conformance', () => {
     }
   });
 
+  test('error event with extra fields and bad-input event validate', async () => {
+    const script = `
+      import { writeError, writeBadInput } from "${FRAMEWORK_DIR}/src/envelope.ts";
+      writeError({ k: 1 }, new Error("rate limited"), "id1", "src1", { code: 429, retryable: true, details: { after: 3 } });
+      writeError({ k: 2 }, Object.assign(new Error("dup"), { code: 11000 }), "id2", "src2");
+      class QuotaError extends Error { constructor(m: string) { super(m); this.name = "QuotaError"; } }
+      writeError({ k: 3 }, new QuotaError("over"), "id3", "src3");
+      writeError({ k: 4 }, "plain string", "id4", "src4");
+      writeBadInput("{not json" + "x".repeat(5000), "invalid JSON");
+    `;
+    const validate = loadValidator();
+    const { stderr, code } = await runTool(script);
+    expect(code).toBe(0);
+    const ev = parseLines(stderr) as Record<string, unknown>[];
+    expect(ev.length).toBe(5);
+    for (const e of ev) {
+      if (!validate(e))
+        throw new Error(`schema fail: ${JSON.stringify(validate.errors)} for ${JSON.stringify(e)}`);
+    }
+    expect([ev[0]!.code, ev[0]!.retryable, ev[0]!.details]).toEqual(['429', true, { after: 3 }]);
+    expect(ev[1]!.code).toBe('11000'); // from err.code
+    expect(ev[2]!.code).toBe('QuotaError'); // from the class name
+    expect('code' in ev[3]!).toBe(false); // plain Error / string: no code
+    expect((ev[4]!.raw as string).length).toBe(4096);
+    expect(ev[4]!.error).toBe('unparseable input line: invalid JSON');
+    expect('input' in ev[4]!).toBe(false);
+  });
+
   test('schema rejects malformed events', () => {
     // Sanity-check the schema actually rejects bad shapes.
     const validate = loadValidator();
     expect(validate({ type: 'log', msg: 'no level' })).toBe(false);
     expect(validate({ type: 'error', error: 'x' })).toBe(false);
+    expect(validate({ type: 'error', error: 'x', input: 1, id: 'a', src: 'b', code: 5 })).toBe(
+      false,
+    );
+    expect(validate({ type: 'error', error: 'x', raw: 'y'.repeat(4097) })).toBe(false);
     expect(validate({ type: 'mystery' })).toBe(false);
   });
 });

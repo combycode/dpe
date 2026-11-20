@@ -8,6 +8,16 @@ import tempfile
 import textwrap
 from pathlib import Path
 
+SRC = Path(__file__).resolve().parents[1] / "src"
+
+
+def tool_env(overrides: dict | None = None) -> dict:
+    """Environment for a tool subprocess: imports THIS checkout's `dpe` (src/) ahead of any
+    installed copy. pytest's `pythonpath` covers the test process only, not the tools it spawns."""
+    env = {**os.environ, **(overrides or {})}
+    env["PYTHONPATH"] = os.pathsep.join(p for p in [str(SRC), env.get("PYTHONPATH", "")] if p)
+    return env
+
 
 def run_tool_code(code: str, settings: dict, stdin_lines: list[dict],
                   timeout: int = 30) -> tuple[list[dict], list[dict], list[dict]]:
@@ -31,6 +41,7 @@ def run_tool_code(code: str, settings: dict, stdin_lines: list[dict],
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=tool_env(),
     )
     Path(tool_path).unlink(missing_ok=True)
 
@@ -569,7 +580,7 @@ class TestEnvPathsRoundTrip:
             f.flush()
             tool_path = f.name
 
-        env = {**os.environ, **env_overrides}
+        env = tool_env(env_overrides)
         result = subprocess.run(
             [sys.executable, tool_path, json.dumps(settings)],
             input=stdin_data, capture_output=True, text=True,
@@ -643,3 +654,60 @@ class TestEnvPathsRoundTrip:
         """, {}, [inp({"path": "$input/foo"})], env_overrides)
 
         assert data[0]["v"]["path"] == "$input/foo"
+
+
+class TestBadInputLines:
+    """Lines that are not envelopes are reported as errors instead of being skipped or
+    crashing the loop; the good envelopes around them are still processed."""
+
+    def test_bad_lines_become_error_events(self):
+        code = textwrap.dedent("""
+            import dpe
+
+            def process_input(v, settings, ctx):
+                ctx.output(v)
+
+            if __name__ == "__main__":
+                dpe.run()
+        """)
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
+            f.write(code)
+            tool = f.name
+        stdin = "\n".join([
+            "{not json",
+            "[1, 2]",
+            '{"t":"x","v":1}',
+            '{"t":"d","id":"b","src":"s","v":{"x":2}}',
+        ]) + "\n"
+        try:
+            r = subprocess.run([sys.executable, tool, "{}"], input=stdin, capture_output=True,
+                               text=True, timeout=30, env=tool_env())
+        finally:
+            Path(tool).unlink(missing_ok=True)
+        assert r.returncode == 0, r.stderr
+        data = [json.loads(line) for line in r.stdout.splitlines() if line.strip()]
+        assert [d["v"]["x"] for d in data] == [2]
+        errs = [json.loads(line) for line in r.stderr.splitlines() if line.strip()]
+        errs = [e for e in errs if e.get("type") == "error"]
+        assert [e["raw"] for e in errs] == ["{not json", "[1, 2]"]
+        assert all(e["error"].startswith("unparseable input line") for e in errs)
+
+    def test_ctx_error_keywords_and_exception_code(self):
+        data, _, stderr = run_tool_code("""
+            import dpe
+
+            class Throttled(Exception):
+                pass
+
+            def process_input(v, settings, ctx):
+                if v["x"] == 1:
+                    ctx.error(v, "bad row", code="E_ROW", retryable=False)
+                else:
+                    raise Throttled("slow down")
+
+            if __name__ == "__main__":
+                dpe.run()
+        """, {}, [inp({"x": 1}, id="a"), inp({"x": 2}, id="b")])
+        errs = [e for e in stderr if e.get("type") == "error"]
+        assert [(e["id"], e.get("code"), e.get("retryable")) for e in errs] == [
+            ("a", "E_ROW", False), ("b", "Throttled", None)]

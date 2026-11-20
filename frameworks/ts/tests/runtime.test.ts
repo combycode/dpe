@@ -237,6 +237,47 @@ describe('runtime stdin loop', () => {
     expect(data.length).toBe(1);
   });
 
+  test('a line that is not an envelope is reported, not skipped silently', async () => {
+    const script = `
+            import { run } from "${FRAMEWORK_DIR}/src/index.ts";
+            await run({ input: (v, _s, ctx) => ctx.output(v) });
+        `;
+    const input = [
+      '{not json',
+      '[1,2]',
+      '{"t":"d","id":"a"}',
+      '{"t":"x","v":1}', // unknown t: still skipped quietly
+      '{"t":"d","id":"b","src":"s","v":{"x":2}}',
+    ].join('\n');
+    const { stdout, stderr } = await runTool(script, {}, input);
+    expect(
+      parseLines(stdout)
+        .filter((e) => e.t === 'd')
+        .map((e) => e.v.x),
+    ).toEqual([2]);
+    const errs = parseLines(stderr).filter((e) => e.type === 'error');
+    expect(errs.map((e) => e.raw)).toEqual(['{not json', '[1,2]', '{"t":"d","id":"a"}']);
+    expect(errs.every((e) => e.error.startsWith('unparseable input line'))).toBe(true);
+  });
+
+  test('ctx.error extra and an exception code reach the error event', async () => {
+    const script = `
+            import { run } from "${FRAMEWORK_DIR}/src/index.ts";
+            await run({ input: (v, _s, ctx) => {
+                if (v.x === 1) ctx.error(v, new Error("bad"), { code: "E_BAD", retryable: false });
+                else throw Object.assign(new Error("boom"), { code: "ETIMEDOUT" });
+            } });
+        `;
+    const input =
+      '{"t":"d","id":"a","src":"s","v":{"x":1}}\n{"t":"d","id":"b","src":"s","v":{"x":2}}\n';
+    const { stderr } = await runTool(script, {}, input);
+    const errs = parseLines(stderr).filter((e) => e.type === 'error');
+    expect(errs.map((e) => [e.id, e.code, e.retryable])).toEqual([
+      ['a', 'E_BAD', false],
+      ['b', 'ETIMEDOUT', undefined],
+    ]);
+  });
+
   test('abs path in output is tokenized back to $token form', async () => {
     // The tool outputs a hard-coded absolute path; the framework must tokenize
     // it back to $input/... form using DPE_INPUT from env.

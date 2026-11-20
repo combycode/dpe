@@ -8,7 +8,7 @@
 
 import { Context, Memory, type QueueItem, type RuntimeLike } from './context';
 import type { DataEnvelope, JSONValue } from './envelope';
-import { parseEnvelope, writeInput, writeLog } from './envelope';
+import { parseInputLine, writeBadInput, writeInput, writeLog } from './envelope';
 import { EnvPaths } from './paths';
 
 export type Processor = (v: JSONValue, settings: JSONValue, ctx: Context) => void | Promise<void>;
@@ -88,8 +88,14 @@ class Runtime implements RuntimeLike {
     for await (const line of readStdinLines()) {
       if (this.shutdown) break;
 
-      const env = parseEnvelope(line);
-      if (env === null) continue;
+      const parsed = parseInputLine(line);
+      if (parsed.kind === 'bad') {
+        // Not an envelope: report it (the runner routes it to the stage's errors port).
+        writeBadInput(line, parsed.reason);
+        continue;
+      }
+      if (parsed.kind !== 'envelope') continue;
+      const env = parsed.env;
       // Default: only data envelopes. With `accept_meta: true` the
       // tool ALSO receives meta envelopes through the input
       // processor. Anything else still skipped.

@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`errors` port on tool stages.** `input: <stage>.errors` receives one envelope per error the stage reports (`ctx.error`, or an exception caught by the SDK): `{t:"d", id, src, v:{error:{message, stage, tool, code?, retryable?, details?}, input}}`, with the failed input's `id` / `src`. Works with existing tool binaries. Several stages may read one port; replicas merge into it. The stage's `<stage>_errors.log` is still written. Without a consumer nothing changes. A route stage's own channel named `errors` keeps working as before.
 - **`on_error` now applies to tool stages** (it was honoured by route / filter only): `drop` (default, as before), `pass` (the failed input goes on downstream unchanged), `fail` (the first error stops the run).
+- **SDKs: error detail.** `ctx.error(v, err, extra)` takes optional `code`, `retryable` and `details` (TypeScript and Python; Python also as keywords; Rust: `ctx.error_with(v, err, ErrorExtra { .. })`, `ctx.error` unchanged). TypeScript and Python fill `code` from `err.code`, else the error's class name. The fields reach the stage's `errors` port and errors log; older runners ignore them.
+- **SDKs: a stdin line that is not an envelope is reported** as an error event with `raw` (its first 4096 characters) instead of being skipped silently (all three SDKs; in Python a valid-JSON non-object line used to crash the tool). TypeScript also reports data / meta envelopes with missing fields, which it used to drop. Lines with an unknown `t` are still skipped.
 
 ### Changed
 

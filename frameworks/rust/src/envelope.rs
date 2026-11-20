@@ -31,6 +31,31 @@ pub fn hash_file(filepath: &str, chunk_size: usize) -> Option<String> {
     Some(hex::encode(hasher.finalize()))
 }
 
+/// Longest start of an unparseable input line kept in its error event.
+pub const RAW_LINE_LIMIT: usize = 4096;
+
+/// What one stdin line is, for the runtime's input loop.
+#[derive(Debug, PartialEq)]
+pub enum InputLine {
+    Empty,
+    Envelope(Value),
+    /// Not valid JSON, or not a JSON object; the reason.
+    Bad(String),
+}
+
+/// Classify one stdin line. A line that is not a JSON object used to be skipped silently.
+pub fn parse_input_line(line: &str) -> InputLine {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return InputLine::Empty;
+    }
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(v @ Value::Object(_)) => InputLine::Envelope(v),
+        Ok(_) => InputLine::Bad("not a JSON object".into()),
+        Err(e) => InputLine::Bad(format!("invalid JSON ({e})")),
+    }
+}
+
 /// Parse a single NDJSON line into envelope. Returns None on parse error.
 pub fn parse_envelope(line: &str) -> Option<Value> {
     let trimmed = line.trim();
@@ -76,17 +101,52 @@ pub fn write_log(msg: &str, level: &str, err_out: &mut dyn Write) {
     let _ = err_out.flush();
 }
 
+/// Optional detail of an error (`ctx.error_with`); the runner puts it on the stage's
+/// `errors` port.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ErrorExtra {
+    /// Machine-readable error code.
+    pub code: Option<String>,
+    /// Whether trying again may succeed (rate limit, timeout...).
+    pub retryable: Option<bool>,
+    /// Anything else worth keeping with the error.
+    pub details: Option<Value>,
+}
+
 /// Write error to stderr with original input preserved.
 pub fn write_error(v: &Value, err: &str, id: &str, src: &str, err_out: &mut dyn Write) {
-    let record = serde_json::json!({
+    write_error_with(v, err, id, src, &ErrorExtra::default(), err_out);
+}
+
+/// [`write_error`] with optional `code` / `retryable` / `details`.
+pub fn write_error_with(v: &Value, err: &str, id: &str, src: &str, extra: &ErrorExtra,
+                        err_out: &mut dyn Write) {
+    let mut record = serde_json::json!({
         "type": "error",
         "error": err,
         "input": v,
         "id": id,
         "src": src,
     });
+    if let Some(c) = &extra.code      { record["code"] = Value::String(c.clone()); }
+    if let Some(r) = extra.retryable  { record["retryable"] = Value::Bool(r); }
+    if let Some(d) = &extra.details   { record["details"] = d.clone(); }
     let _ = writeln!(err_out, "{}", serde_json::to_string(&record)
             .expect("record serializes — Value tree, no non-string map keys"));
+    let _ = err_out.flush();
+}
+
+/// An input line that is not an envelope: reported instead of being skipped silently.
+pub fn write_bad_input(line: &str, reason: &str, err_out: &mut dyn Write) {
+    let line = line.trim_end_matches(['\r', '\n']);
+    let mut end = line.len().min(RAW_LINE_LIMIT);
+    while !line.is_char_boundary(end) { end -= 1; }
+    let record = serde_json::json!({
+        "type": "error",
+        "error": format!("unparseable input line: {reason}"),
+        "raw": &line[..end],
+    });
+    let _ = writeln!(err_out, "{}", record);
     let _ = err_out.flush();
 }
 

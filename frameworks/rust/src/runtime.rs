@@ -82,9 +82,14 @@ pub fn run(tool: Tool) {
             Err(_) => break,
         };
 
-        let envelope = match envelope::parse_envelope(&line) {
-            Some(e) => e,
-            None => continue,
+        let envelope = match envelope::parse_input_line(&line) {
+            envelope::InputLine::Envelope(e) => e,
+            envelope::InputLine::Empty => continue,
+            envelope::InputLine::Bad(reason) => {
+                // Not an envelope: report it (the runner routes it to the stage's errors port).
+                envelope::write_bad_input(&line, &reason, &mut stderr_buf);
+                continue;
+            }
         };
 
         // Default: only data envelopes. With `accept_meta: true` the

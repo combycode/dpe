@@ -95,6 +95,12 @@ impl<'a> Context<'a> {
         envelope::write_error(v, err, &self.id, &self.src, &mut self.stderr);
     }
 
+    /// [`error`](Self::error) with optional `code` / `retryable` / `details`, which reach the
+    /// stage's `errors` port when it is consumed.
+    pub fn error_with(&mut self, v: &Value, err: &str, extra: envelope::ErrorExtra) {
+        envelope::write_error_with(v, err, &self.id, &self.src, &extra, &mut self.stderr);
+    }
+
     /// Hash a string. Returns 16-char hex.
     pub fn hash(&self, key: &str) -> String {
         envelope::hash_string(key)

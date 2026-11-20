@@ -31,7 +31,7 @@ pub mod prelude {
     pub use crate::accumulators::*;
     pub use crate::atomic::{write_atomic, write_atomic_async};
     pub use crate::context::Context;
-    pub use crate::envelope::{hash_string, hash_file};
+    pub use crate::envelope::{hash_string, hash_file, ErrorExtra};
     pub use crate::paths::EnvPaths;
     pub use crate::polling::{poll_until, poll_until_async, PollOutcome};
     pub use crate::pool::{HandleEntry, LruPool};

@@ -113,6 +113,43 @@ def test_stats_event_with_no_extra_fields_validates(validator):
     validator.validate(events[0])
 
 
+def test_error_extra_fields_and_bad_input_validate(validator):
+    class QuotaError(Exception):
+        pass
+
+    class HttpError(Exception):
+        code = 429
+
+    def emit():
+        extra = {"code": "E_BAD", "retryable": False, "details": {"n": 1}}
+        env.write_error({"k": 1}, ValueError("bad"), "id1", "src1", extra)
+        env.write_error({"k": 2}, HttpError("rate limited"), "id2", "src2")
+        env.write_error({"k": 3}, QuotaError("over"), "id3", "src3")
+        env.write_error({"k": 4}, Exception("plain"), "id4", "src4")
+        env.write_error({"k": 5}, "a string", "id5", "src5", {"retryable": "yes"})
+        env.write_bad_input("{not json" + "x" * 5000 + "\n", "invalid JSON")
+
+    events = capture_stderr(emit)
+    assert len(events) == 6
+    for e in events:
+        validator.validate(e)
+    first = events[0]
+    assert (first["code"], first["retryable"], first["details"]) == ("E_BAD", False, {"n": 1})
+    assert events[1]["code"] == "429"          # from err.code
+    assert events[2]["code"] == "QuotaError"   # from the class name
+    assert "code" not in events[3]             # plain Exception: no code
+    assert "code" not in events[4] and "retryable" not in events[4]
+    assert len(events[5]["raw"]) == env.RAW_LINE_LIMIT
+    assert "input" not in events[5]
+
+
+def test_parse_input_line_classifies():
+    assert env.parse_input_line("  \n") == ("empty", None)
+    assert env.parse_input_line('{"t":"d","id":"a","src":"s","v":1}')[0] == "envelope"
+    assert env.parse_input_line("{not json")[0] == "bad"
+    assert env.parse_input_line("[1, 2]") == ("bad", "not a JSON object")
+
+
 def test_schema_rejects_malformed_events(validator):
     """Sanity check the schema actually rejects bad shapes — guards against
     a permissive schema that would let drift slip through."""

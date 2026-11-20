@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dpe._accumulators import Memory
 from dpe._context import Context
-from dpe._envelope import parse_envelope, write_input, write_log
+from dpe._envelope import parse_input_line, write_bad_input, write_input, write_log
 from dpe._paths import EnvPaths
 
 
@@ -87,8 +87,12 @@ class Runtime:
             if self._shutdown:
                 break
 
-            envelope = parse_envelope(line)
-            if envelope is None:
+            kind, envelope = parse_input_line(line)
+            if kind == "bad":
+                # Not an envelope: report it (the runner routes it to the stage's errors port).
+                write_bad_input(line, envelope)
+                continue
+            if kind == "empty":
                 continue
 
             # Default: only data envelopes. With accept_meta=True, also

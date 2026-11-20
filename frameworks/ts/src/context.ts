@@ -7,7 +7,7 @@
  *   ctx.drain()
  *   ctx.meta(v)
  *   ctx.log(msg, {level?, ...extra})
- *   ctx.error(v, err)
+ *   ctx.error(v, err, {code?, retryable?, details?})
  *   ctx.trace(k, v)
  *   ctx.stats(data)
  *   ctx.hash(str)
@@ -15,7 +15,7 @@
  */
 
 import { cachedImpl } from './cache';
-import type { JSONValue } from './envelope';
+import type { ErrorExtra, JSONValue } from './envelope';
 import {
   hashFile,
   hashString,
@@ -108,8 +108,13 @@ export class Context {
     writeLog(msg, level, Object.keys(extra).length ? extra : undefined);
   }
 
-  error(v: JSONValue, err: unknown): void {
-    writeError(v, err, this.id, this.src);
+  /**
+   * Report that this input failed. The runner writes it to the stage's errors log and, when
+   * the stage's `errors` port is consumed, emits `{error: {message, code?, retryable?,
+   * details?}, input: v}` there. `code` defaults to `err.code`, else the error's class name.
+   */
+  error(v: JSONValue, err: unknown, extra?: ErrorExtra): void {
+    writeError(v, err, this.id, this.src, extra);
   }
 
   hash(key: string): string {

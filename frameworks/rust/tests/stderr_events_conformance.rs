@@ -76,6 +76,37 @@ fn error_event_validates_against_schema() {
 }
 
 #[test]
+fn error_with_extra_and_bad_input_validate_against_schema() {
+    let schema = load_schema();
+    let mut buf = Vec::new();
+    let extra = envelope::ErrorExtra {
+        code: Some("E_BAD".into()), retryable: Some(true), details: Some(json!({"n": 1})),
+    };
+    envelope::write_error_with(&json!({"k": 1}), "bad", "id1", "src1", &extra, &mut buf);
+    envelope::write_error_with(&json!({"k": 2}), "plain", "id2", "src2", &envelope::ErrorExtra::default(), &mut buf);
+    // 4097 bytes with a multi-byte char straddling the limit: cut on a char boundary.
+    let long = format!("{{not json{}é", "x".repeat(4086));
+    envelope::write_bad_input(&format!("{long}\n"), "invalid JSON", &mut buf);
+    let events = parse_lines(&buf);
+    assert_eq!(events.len(), 3);
+    for (i, e) in events.iter().enumerate() { assert_valid(&schema, e, &format!("event {i}")); }
+    assert_eq!((events[0]["code"].clone(), events[0]["retryable"].clone()), (json!("E_BAD"), json!(true)));
+    assert!(events[1].get("code").is_none());
+    let raw = events[2]["raw"].as_str().unwrap();
+    assert!(raw.len() <= envelope::RAW_LINE_LIMIT && raw.starts_with("{not json"));
+    assert!(events[2].get("input").is_none());
+}
+
+#[test]
+fn parse_input_line_classifies() {
+    use envelope::InputLine;
+    assert_eq!(envelope::parse_input_line("  "), InputLine::Empty);
+    assert!(matches!(envelope::parse_input_line(r#"{"t":"d","id":"a","src":"s","v":1}"#), InputLine::Envelope(_)));
+    assert!(matches!(envelope::parse_input_line("{not json"), InputLine::Bad(_)));
+    assert_eq!(envelope::parse_input_line("[1,2]"), InputLine::Bad("not a JSON object".into()));
+}
+
+#[test]
 fn trace_event_validates_against_schema() {
     let schema = load_schema();
     let mut buf = Vec::new();

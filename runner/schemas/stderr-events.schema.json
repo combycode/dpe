@@ -25,17 +25,25 @@
     },
     "error": {
       "title": "error",
-      "description": "Per-row error from ctx.error(v, msg). Carries the original input envelope's id/src so the runner can reconstruct provenance. The runner enriches the on-disk form with `t` (ms since epoch) and `sid` (stage id) when persisting to <session>/logs/<stage>_errors.log so dpe log can time-merge with logs.",
+      "description": "Per-row error from ctx.error(v, err, extra?). Carries the original input envelope's id/src so the runner can reconstruct provenance; or, when the framework could not read an input line as an envelope, `raw` (the start of that line) instead of input/id/src. Optional `code` / `retryable` / `details` (from `extra`, `code` defaulting to the error's code or class name) reach the stage's `errors` port. The runner enriches the on-disk form with `t` (ms since epoch) and `sid` (stage id) when persisting to <session>/logs/<stage>_errors.log so dpe log can time-merge with logs.",
       "type": "object",
-      "required": ["type", "error", "input", "id", "src"],
+      "required": ["type", "error"],
+      "anyOf": [
+        { "required": ["input", "id", "src"] },
+        { "required": ["raw"] }
+      ],
       "properties": {
-        "type":  { "const": "error" },
-        "error": { "type": "string" },
-        "input": true,
-        "id":    { "type": "string" },
-        "src":   { "type": "string" },
-        "t":     { "type": "integer", "minimum": 0 },
-        "sid":   { "type": "string" }
+        "type":      { "const": "error" },
+        "error":     { "type": "string" },
+        "input":     true,
+        "id":        { "type": "string" },
+        "src":       { "type": "string" },
+        "code":      { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "details":   true,
+        "raw":       { "type": "string", "maxLength": 4096 },
+        "t":         { "type": "integer", "minimum": 0 },
+        "sid":       { "type": "string" }
       },
       "additionalProperties": false
     },

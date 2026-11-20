@@ -79,6 +79,58 @@ export function parseEnvelope(line: string): Envelope | null {
   }
 }
 
+/** What one stdin line is, for the runtime's input loop. */
+export type InputLine =
+  | { kind: 'empty' }
+  | { kind: 'envelope'; env: Envelope }
+  /** Valid JSON object with a `t` the runtime does not handle: skipped, as before. */
+  | { kind: 'other' }
+  /** Not an envelope: invalid JSON, not an object, or a data / meta envelope missing fields. */
+  | { kind: 'bad'; reason: string };
+
+export function parseInputLine(line: string): InputLine {
+  const trimmed = line.trim();
+  if (!trimmed) return { kind: 'empty' };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch (e) {
+    return { kind: 'bad', reason: `invalid JSON (${e instanceof Error ? e.message : String(e)})` };
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { kind: 'bad', reason: 'not a JSON object' };
+  }
+  const env = parseEnvelope(trimmed);
+  if (env) return { kind: 'envelope', env };
+  const t = (obj as { t?: unknown }).t;
+  if (t === 'd')
+    return { kind: 'bad', reason: 'data envelope without string id / src or without v' };
+  if (t === 'm') return { kind: 'bad', reason: 'meta envelope without v' };
+  return { kind: 'other' };
+}
+
+/** Optional detail for `ctx.error(v, err, extra)`; the runner puts it on the stage's `errors` port. */
+export interface ErrorExtra {
+  /** Machine-readable error code; defaults to `err.code`, else the error's class name. */
+  code?: string | number;
+  /** Whether trying again may succeed (rate limit, timeout...). */
+  retryable?: boolean;
+  /** Anything else worth keeping with the error. */
+  details?: JSONValue;
+}
+
+/** Longest start of an unparseable input line kept in its error event. */
+export const RAW_LINE_LIMIT = 4096;
+
+function errorCode(err: unknown): string | undefined {
+  if (err && typeof err === 'object') {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === 'string' || typeof code === 'number') return String(code);
+    if (err instanceof Error && err.name && err.name !== 'Error') return err.name;
+  }
+  return undefined;
+}
+
 export function writeData(v: JSONValue, id: string, src: string): void {
   _writeStdout({ t: 'd', id, src, v });
 }
@@ -91,13 +143,33 @@ export function writeLog(msg: string, level = 'info', extra?: Record<string, JSO
   _writeStderr({ type: 'log', level, msg, ...(extra ?? {}) });
 }
 
-export function writeError(v: JSONValue, err: unknown, id: string, src: string): void {
-  _writeStderr({
+export function writeError(
+  v: JSONValue,
+  err: unknown,
+  id: string,
+  src: string,
+  extra?: ErrorExtra,
+): void {
+  const event: Record<string, JSONValue> = {
     type: 'error',
     error: err instanceof Error ? err.message : String(err),
     input: v,
     id,
     src,
+  };
+  const code = extra?.code !== undefined ? String(extra.code) : errorCode(err);
+  if (code !== undefined) event.code = code;
+  if (typeof extra?.retryable === 'boolean') event.retryable = extra.retryable;
+  if (extra?.details !== undefined) event.details = extra.details;
+  _writeStderr(event);
+}
+
+/** An input line that is not an envelope: reported instead of being skipped silently. */
+export function writeBadInput(line: string, reason: string): void {
+  _writeStderr({
+    type: 'error',
+    error: `unparseable input line: ${reason}`,
+    raw: line.slice(0, RAW_LINE_LIMIT),
   });
 }
 
