@@ -180,8 +180,11 @@ export function writeBadInput(line: string, reason: string): void {
     type: 'error',
     error: `unparseable input line: ${reason}`,
     // Cut by code points: a UTF-16 slice can split a surrogate pair, and a lone surrogate
-    // makes the whole event unreadable for the runner.
-    raw: Array.from(line).slice(0, RAW_LINE_LIMIT).join(''),
+    // makes the whole event unreadable for the runner. The first 2 x limit UTF-16 units always
+    // hold the first `limit` code points, so a huge line is never expanded whole.
+    raw: Array.from(line.slice(0, 2 * RAW_LINE_LIMIT))
+      .slice(0, RAW_LINE_LIMIT)
+      .join(''),
   });
 }
 

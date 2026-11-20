@@ -162,7 +162,7 @@ def test_schema_rejects_malformed_events(validator):
 
 
 def test_bom_and_raising_code_property():
-    assert env.parse_input_line('﻿{"t":"d","id":"a","src":"s","v":1}')[0] == "envelope"
+    assert env.parse_input_line(chr(0xFEFF) + '{"t":"d","id":"a","src":"s","v":1}')[0] == "envelope"
 
     class Weird(Exception):
         @property

@@ -85,6 +85,8 @@ def write_log(msg: str, level: str, extra: dict | None = None):
 RAW_LINE_LIMIT = 4096
 """Longest start of an unparseable input line kept in its error event."""
 
+_BOM = chr(0xFEFF)  # byte-order mark; spelled as a code point so no editor can drop it
+
 
 def parse_input_line(line: str) -> tuple[str, Any]:
     """Classify one stdin line for the runtime's input loop.
@@ -93,7 +95,7 @@ def parse_input_line(line: str) -> tuple[str, Any]:
     not valid JSON or not a JSON object (such a line used to be skipped, or crashed the loop).
     """
     # A leading byte-order mark (first line of a file written by some editors) is not data.
-    line = line.lstrip("﻿").strip()
+    line = line.lstrip(_BOM).strip()
     if not line:
         return "empty", None
     try:
