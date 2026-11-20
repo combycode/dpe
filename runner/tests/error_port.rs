@@ -294,7 +294,9 @@ stages:
     let r = run(&tmp, seed(200)).await;
     assert!(r.report.failed());
     let got = lines(&r, "extract").len();
-    assert!(got < 100, "terminal stage kept running: {got} envelopes");
+    // Partial output is kept (x = 1 came out before the error) and the stage was killed
+    // early (all 199 would come out if it had been left to finish).
+    assert!((1..100).contains(&got), "expected partial output of a killed stage, got {got} envelopes");
     assert_eq!(r.report.stages_succeeded, 0, "the stage that stopped the run is not a success");
 }
 

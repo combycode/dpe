@@ -206,14 +206,16 @@ pub(super) async fn execute(
     //    run fails. (Once all of this is done every stage has closed its stdout, so a later
     //    error no longer needs a kill - it still fails the run, see shutdown_and_mark.)
     let wiring_aborts: Vec<_> = wiring_tasks.iter().map(|h| h.abort_handle()).collect();
-    let drain_aborts: Vec<_> = terminal_drain_tasks.iter().map(|(_, h)| h.abort_handle()).collect();
     type Drained = (String, Result<std::io::Result<Vec<u8>>, tokio::task::JoinError>);
     let mut drained: Vec<Drained> = Vec::new();
     let aborted = {
+        // The drain tasks are awaited by reference, not moved in: after an abort the ones
+        // not yet collected are still there to collect (see below).
+        let (drains, out) = (&mut terminal_drain_tasks, &mut drained);
         let run = async {
             feed_leaf_stages(&mut handles, &leaf_stages, &input).await?;
             for h in wiring_tasks { let _ = h.await; }
-            for (name, task) in terminal_drain_tasks { drained.push((name, task.await)); }
+            for (name, task) in drains.iter_mut() { out.push((name.clone(), task.await)); }
             Ok::<(), DagError>(())
         };
         tokio::select! {
@@ -224,9 +226,14 @@ pub(super) async fn execute(
     let mut killed = None;
     if aborted {
         eprintln!("[dag] {} - stopping the run", abort.reason().unwrap_or_default());
-        for a in wiring_aborts.iter().chain(&drain_aborts) { a.abort(); }
+        for a in &wiring_aborts { a.abort(); }
         killed = Some(shutdown_and_mark(std::mem::take(&mut handles), 0, &state_coll,
                                         abort.stage().as_deref()).await);
+    }
+    // After a kill the remaining terminal drains reach EOF by themselves; keep their partial
+    // output (it is what `--debug-capture` needs to look into the failure).
+    for (name, task) in terminal_drain_tasks.into_iter().skip(drained.len()) {
+        drained.push((name, task.await));
     }
     // Every child has exited (or been killed): each stderr reader sees EOF and finishes,
     // having routed every error event - including a late `on_error: fail`.
