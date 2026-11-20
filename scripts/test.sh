@@ -15,6 +15,9 @@ echo "[test] pytest (frameworks/python)"
 ( cd frameworks/python && python -m pytest -q )
 
 echo "[test] test-pipeline regression"
+# run-all.sh runs target/release/{dpe,tools}: build them from this checkout first, so the
+# regression exercises the code under test (not a stale build or a dpe installed on PATH).
+cargo build --release --workspace
 bash test-pipeline/run-all.sh
 
 echo "[test] ALL PASSED"

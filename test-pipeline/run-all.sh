@@ -3,7 +3,7 @@
 # Runs every variant under standard/variants/ and reports pass/fail.
 #
 # Usage:
-#   ./test-pipeline/run-all.sh                         # use built dpe binary
+#   ./test-pipeline/run-all.sh                         # this checkout's target/release/dpe (else PATH)
 #   DPE_BIN=/path/to/dpe ./test-pipeline/run-all.sh    # override binary
 
 set -euo pipefail
@@ -21,17 +21,22 @@ if command -v cygpath >/dev/null 2>&1; then
     OUTPUT="$(cygpath -w "$OUTPUT" | tr '\\' '/')"
 fi
 
-DPE="${DPE_BIN:-dpe}"
-
-if ! command -v "$DPE" >/dev/null 2>&1; then
-    # Fall back to the monorepo's own release binary
-    workspace="$(cd "$SCRIPT_DIR/.." && pwd)"
-    candidate="$workspace/target/release/dpe"
-    [ -x "$candidate.exe" ] && DPE="$candidate.exe" || DPE="$candidate"
-    if [ ! -x "$DPE" ]; then
-        echo "dpe not found. Build it first: cargo build --release -p dpe" >&2
-        exit 1
-    fi
+# Which dpe: DPE_BIN if set, else this checkout's own release build, else `dpe` on PATH.
+# The checkout's build comes before PATH so the code under test is what runs - an installed
+# dpe on PATH (e.g. an older npm release) would silently test something else.
+workspace="$(cd "$SCRIPT_DIR/.." && pwd)"
+candidate="$workspace/target/release/dpe"
+if [ -n "${DPE_BIN:-}" ]; then
+    DPE="$DPE_BIN"
+elif [ -x "$candidate.exe" ]; then
+    DPE="$candidate.exe"
+elif [ -x "$candidate" ]; then
+    DPE="$candidate"
+elif command -v dpe >/dev/null 2>&1; then
+    DPE=dpe
+else
+    echo "dpe not found. Build it first: cargo build --release -p dpe" >&2
+    exit 1
 fi
 
 echo "[run-all] dpe: $DPE"
