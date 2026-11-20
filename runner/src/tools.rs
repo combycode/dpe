@@ -310,6 +310,9 @@ fn build_invocation(meta: &ToolMeta, dir: &Path) -> Result<Invocation, ToolError
 
 // ═══ Builtins ═════════════════════════════════════════════════════════════
 
+/// True for the runner's built-in stage kinds (route, filter, dedup, group-by, spread, toggle).
+pub fn is_builtin(name: &str) -> bool { builtin_kind(name).is_some() }
+
 fn builtin_kind(name: &str) -> Option<BuiltinKind> {
     match name {
         "route"    => Some(BuiltinKind::Route),

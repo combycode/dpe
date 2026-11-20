@@ -1263,14 +1263,21 @@ fn cmd_run(
             "stagesSucceeded":  report.stages_succeeded,
             "stagesFailed":     report.stages_failed,
             "durationMs":       report.duration_ms,
+            "failed":           report.failed(),
+            "failedOnError":    report.failed_on_error,
         });
         println!("{}", serde_json::to_string(&summary)?);
     } else {
-        println!("[OK] {}:{} — {} stage(s), {} succeeded, {} failed, {}ms",
+        println!("[{}] {}:{} — {} stage(s), {} succeeded, {} failed, {}ms",
+            if report.failed() { "FAILED" } else { "OK" },
             resolved.pipeline, resolved.variant,
             report.stages_run, report.stages_succeeded, report.stages_failed,
             report.duration_ms);
+        if let Some(reason) = &report.failed_on_error { println!("  {reason}"); }
     }
+    // A failed stage (crash, non-zero exit, `on_error: fail`) fails the command, so a
+    // scheduler or a script sees it; errors reported with ctx.error alone do not.
+    if report.failed() { std::process::exit(1); }
     Ok(())
 }
 

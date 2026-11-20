@@ -14,7 +14,9 @@
 //!   - trace → Tracer (appends to $session/trace/trace.N.ndjson with {t,sid,id,src,labels})
 //!     AND StatsCollector counter — channel="data" or unset → rows_out
 //!     (back-compat); channel="meta" → meta
-//!   - error → append to $session/logs/<stage>_errors.log as NDJSON
+//!   - error → append to $session/logs/<stage>_errors.log as NDJSON; when the stage has an
+//!     [`ErrorRouting`]: an envelope on its `errors` port, the failed input re-emitted
+//!     (`on_error: pass`), or an abort of the run (`on_error: fail`)
 //!   - log   → print to runner's stderr as `[stage] level: msg` (console logger)
 //!   - stats → increment in-memory counters in `StatsCollector` (custom — TODO)
 //!
@@ -115,6 +117,17 @@ pub enum StderrEvent {
         id:  Option<String>,
         #[serde(default)]
         src: Option<String>,
+        /// Optional detail from `ctx.error(v, err, extra)` (SDKs that send it); older
+        /// tools omit these and the error envelope simply leaves them out.
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        retryable: Option<bool>,
+        #[serde(default)]
+        details: Option<Value>,
+        /// Start of an input line the SDK could not parse as an envelope.
+        #[serde(default)]
+        raw: Option<String>,
     },
     /// Framework-emitted before each `process_input` call. Used to count
     /// `rows_in` for every stage that reads stdin — including pass-through
@@ -160,6 +173,85 @@ impl StderrEvent {
     }
 }
 
+// ═══ Error routing: errors port, on_error pass / fail ════════════════════
+
+/// Fired once, by the first error of a stage with `on_error: fail`; the executor
+/// waits on it and stops the run.
+#[derive(Debug, Default)]
+pub struct AbortSignal {
+    fired:  std::sync::atomic::AtomicBool,
+    notify: tokio::sync::Notify,
+    /// (stage, reason) of the first fire.
+    first:  Mutex<Option<(String, String)>>,
+}
+
+impl AbortSignal {
+    /// First call wins; later calls (other errors, other stages) are ignored.
+    pub fn fire(&self, stage: &str, reason: String) {
+        if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            *self.first.lock().unwrap() = Some((stage.to_string(), reason));
+            self.notify.notify_one();   // stores a permit if nobody waits yet
+        }
+    }
+    pub fn is_fired(&self) -> bool { self.fired.load(std::sync::atomic::Ordering::SeqCst) }
+    /// The stage that fired first.
+    pub fn stage(&self) -> Option<String> { self.first.lock().unwrap().as_ref().map(|f| f.0.clone()) }
+    pub fn reason(&self) -> Option<String> { self.first.lock().unwrap().as_ref().map(|f| f.1.clone()) }
+    /// Resolves once [`fire`](Self::fire) has been called (immediately if it already was).
+    pub async fn wait(&self) {
+        if !self.is_fired() { self.notify.notified().await; }
+    }
+}
+
+/// Where a tool stage's error events go besides `<stage>_errors.log`.
+#[derive(Debug, Clone, Default)]
+pub struct ErrorRouting {
+    /// Tool name, recorded in the error envelope.
+    pub tool:  String,
+    /// The stage's `errors` port (set only when some stage consumes `<stage>.errors`).
+    pub port:  Option<tokio::sync::mpsc::Sender<String>>,
+    /// `on_error: pass` - the failed input envelope, sent on to the stage's data output.
+    pub pass:  Option<tokio::sync::mpsc::Sender<String>>,
+    /// `on_error: fail` - fired on the first error.
+    pub abort: Option<Arc<AbortSignal>>,
+}
+
+/// The envelope a stage's `errors` port carries for one error event:
+/// `{t:"d", id, src, v:{error:{message, stage, tool, code?, retryable?, details?, raw?}, input}}`.
+/// `id` / `src` are the failed input's (as when an SDK passes an envelope through); they are
+/// empty strings when the tool did not send them. `None` for non-error events.
+pub fn error_port_envelope(stage: &str, tool: &str, ev: &StderrEvent) -> Option<Value> {
+    let StderrEvent::Error { error, input, id, src, code, retryable, details, raw } = ev else {
+        return None;
+    };
+    let mut e = serde_json::Map::new();
+    e.insert("message".into(), Value::String(error.clone()));
+    e.insert("stage".into(),   Value::String(stage.to_string()));
+    e.insert("tool".into(),    Value::String(tool.to_string()));
+    if let Some(c) = code      { e.insert("code".into(),      Value::String(c.clone())); }
+    if let Some(r) = retryable { e.insert("retryable".into(), Value::Bool(*r)); }
+    if let Some(d) = details   { e.insert("details".into(),   d.clone()); }
+    if let Some(r) = raw       { e.insert("raw".into(),       Value::String(r.clone())); }
+    Some(serde_json::json!({
+        "t": "d",
+        "id":  id.clone().unwrap_or_default(),
+        "src": src.clone().unwrap_or_default(),
+        "v":   { "error": Value::Object(e), "input": input.clone().unwrap_or(Value::Null) },
+    }))
+}
+
+/// `on_error: pass`: the failed input, unchanged. `None` when the event carries no input
+/// (for example an unparseable line) - there is nothing to pass on.
+pub fn pass_envelope(ev: &StderrEvent) -> Option<Value> {
+    let StderrEvent::Error { input: Some(v), id, src, .. } = ev else { return None };
+    Some(serde_json::json!({
+        "t": "d",
+        "id":  id.clone().unwrap_or_default(),
+        "src": src.clone().unwrap_or_default(),
+        "v":   v,
+    }))
+}
+
 // ═══ Aggregator task ═════════════════════════════════════════════════════
 
 /// Spawn a classifier task for one spawned instance's stderr.
@@ -181,8 +273,9 @@ pub fn spawn_reader(
     tracer: Option<Tracer>,
     stats: Option<StatsCollector>,
     log_sink: Option<LogSink>,
+    routing: Option<ErrorRouting>,
 ) -> JoinHandle<io::Result<ReaderStats>> {
-    tokio::spawn(reader_task_generic(stderr, stage_id, logs_dir, tracer, stats, log_sink))
+    tokio::spawn(reader_task_generic(stderr, stage_id, logs_dir, tracer, stats, log_sink, routing))
 }
 
 // ═══ Log sink — shared multi-producer writer for $session/log.ndjson ═════
@@ -284,6 +377,7 @@ pub async fn reader_task_generic<R>(
     tracer: Option<Tracer>,
     stats_coll: Option<StatsCollector>,
     log_sink: Option<LogSink>,
+    routing: Option<ErrorRouting>,
 ) -> io::Result<ReaderStats>
 where R: AsyncRead + Unpin,
 {
@@ -338,7 +432,7 @@ where R: AsyncRead + Unpin,
                     }
                 }
             }
-            StderrEvent::Error { error, input, id, src } => {
+            StderrEvent::Error { error, input, id, src, .. } => {
                 stats.errors_written += 1;
                 if let Some(coll) = &stats_coll { coll.inc_errors(&stage_id); }
                 // Lazy-open the errors log only when we actually get one.
@@ -364,6 +458,9 @@ where R: AsyncRead + Unpin,
                         .unwrap_or_else(|_| trimmed.to_string());
                     w.write_all(serialised.as_bytes()).await?;
                     w.write_all(b"\n").await?;
+                }
+                if let Some(r) = &routing {
+                    route_error(&event, &stage_id, r, tracer.as_ref()).await;
                 }
             }
             StderrEvent::Log { level, msg, extra } => {
@@ -391,6 +488,31 @@ where R: AsyncRead + Unpin,
 
     if let Some(mut w) = errors_writer { w.flush().await?; }
     Ok(stats)
+}
+
+/// Feed one error event to the stage's [`ErrorRouting`]. A closed port / pass channel means
+/// its consumer is gone; the error is still in the errors log, so it is not an error here.
+async fn route_error(event: &StderrEvent, stage_id: &str, r: &ErrorRouting, tracer: Option<&Tracer>) {
+    if let Some(tx) = &r.port {
+        if let Some(env) = error_port_envelope(stage_id, &r.tool, event) {
+            if let Some(tr) = tracer {
+                let src = env["src"].as_str().unwrap_or_default().to_string();
+                let id  = env["id"].as_str().unwrap_or_default().to_string();
+                let mut labels = BTreeMap::new();
+                labels.insert("port".to_string(), Value::String("errors".into()));
+                tr.emit(TraceEvent::now(stage_id.to_string(), Src::One(src)).with_id(id).with_labels(labels));
+            }
+            let _ = tx.send(env.to_string()).await;
+        }
+    }
+    if let Some(tx) = &r.pass {
+        if let Some(env) = pass_envelope(event) {
+            let _ = tx.send(env.to_string()).await;
+        }
+    }
+    if let (Some(abort), StderrEvent::Error { error, .. }) = (&r.abort, event) {
+        abort.fire(stage_id, format!("stage '{stage_id}' reported an error (on_error: fail): {error}"));
+    }
 }
 
 // ═══ Tests ═════════════════════════════════════════════════════════════════
@@ -471,7 +593,7 @@ mod tests {
         let input = b"{\"type\":\"log\",\"level\":\"info\",\"msg\":\"hello\"}\n\
                       {\"type\":\"log\",\"level\":\"warn\",\"msg\":\"uh\"}\n";
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
-        let stats = reader_task_generic(r, "s-001".into(), logs.clone(), None, None, None)
+        let stats = reader_task_generic(r, "s-001".into(), logs.clone(), None, None, None, None)
             .await.unwrap();
         assert_eq!(stats.lines_read, 2);
         assert_eq!(stats.logs_written, 2);
@@ -486,7 +608,7 @@ mod tests {
         let input = b"{\"type\":\"error\",\"error\":\"boom\",\"input\":{\"x\":1},\"id\":\"a\",\"src\":\"b\"}\n\
                       {\"type\":\"error\",\"error\":\"kaboom\",\"id\":\"c\",\"src\":\"d\"}\n";
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
-        let stats = reader_task_generic(r, "s-001".into(), logs.clone(), None, None, None)
+        let stats = reader_task_generic(r, "s-001".into(), logs.clone(), None, None, None, None)
             .await.unwrap();
         assert_eq!(stats.errors_written, 2);
         let p = logs.join("s-001_errors.log");
@@ -523,7 +645,7 @@ mod tests {
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
         let rstats = reader_task_generic(
             r, "s-001".into(), logs.clone(), Some(tracer.clone()), None, None
-        ).await.unwrap();
+        , None).await.unwrap();
 
         assert_eq!(rstats.traces_forwarded, 1);
         assert_eq!(rstats.logs_written, 1);
@@ -544,7 +666,7 @@ mod tests {
         let logs = tmp.path().join("logs");
         let input = b"\n\n{\"type\":\"log\",\"msg\":\"x\"}\n\n";
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
-        let stats = reader_task_generic(r, "s".into(), logs, None, None, None).await.unwrap();
+        let stats = reader_task_generic(r, "s".into(), logs, None, None, None, None).await.unwrap();
         assert_eq!(stats.lines_read, 1);
     }
 
@@ -554,7 +676,7 @@ mod tests {
         let logs = tmp.path().join("logs");
         let input = b"{\"type\":\"stats\",\"stage\":\"x\",\"rps\":42.0}\n";
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
-        let stats = reader_task_generic(r, "x".into(), logs.clone(), None, None, None)
+        let stats = reader_task_generic(r, "x".into(), logs.clone(), None, None, None, None)
             .await.unwrap();
         assert_eq!(stats.stats_written, 1);
     }
@@ -570,7 +692,7 @@ mod tests {
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
         let _ = reader_task_generic(
             r, "s".into(), logs, None, Some(coll.clone()), None
-        ).await.unwrap();
+        , None).await.unwrap();
         let snap = coll.snapshot();
         assert_eq!(snap["s"].rows_out, 2);
         assert_eq!(snap["s"].errors, 1);
@@ -587,7 +709,7 @@ mod tests {
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
         let stats = reader_task_generic(
             r, "stage1".into(), logs, None, Some(coll.clone()), None
-        ).await.unwrap();
+        , None).await.unwrap();
         assert_eq!(stats.inputs_seen, 3);
         let snap = coll.snapshot();
         assert_eq!(snap["stage1"].rows_in, 3);
@@ -606,7 +728,7 @@ mod tests {
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
         let _ = reader_task_generic(
             r, "s".into(), logs, None, Some(coll.clone()), None
-        ).await.unwrap();
+        , None).await.unwrap();
         let snap = coll.snapshot();
         // channel:"data" + missing channel both count toward rows_out (back-compat).
         assert_eq!(snap["s"].rows_out, 2);
@@ -629,7 +751,7 @@ mod tests {
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
         let _ = reader_task_generic(
             r, "s".into(), logs, Some(tracer.clone()), None, None
-        ).await.unwrap();
+        , None).await.unwrap();
         tracer.shutdown();
         let tstats = trace_handle.await.unwrap().unwrap();
         // Only the data-channel trace was forwarded.
@@ -642,8 +764,89 @@ mod tests {
         let logs = tmp.path().join("logs");
         let input = b"some plain text\n";
         let r = tokio::io::BufReader::new(std::io::Cursor::new(input.to_vec()));
-        let stats = reader_task_generic(r, "x".into(), logs, None, None, None).await.unwrap();
+        let stats = reader_task_generic(r, "x".into(), logs, None, None, None, None).await.unwrap();
         assert_eq!(stats.lines_read, 1);
         assert_eq!(stats.logs_written, 1);
+    }
+
+    // ─── errors port / on_error (T0017) ──────────────────────────────────────
+
+    #[test]
+    fn error_port_envelope_carries_error_and_input() {
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"boom","input":{"x":2},"id":"e2","src":"s","code":"rate_limit","retryable":true,"details":{"status":429}}"#);
+        let e = error_port_envelope("extract", "doc-converter", &ev).unwrap();
+        assert_eq!(e, serde_json::json!({
+            "t": "d", "id": "e2", "src": "s",
+            "v": {
+                "error": {"message": "boom", "stage": "extract", "tool": "doc-converter",
+                          "code": "rate_limit", "retryable": true, "details": {"status": 429}},
+                "input": {"x": 2},
+            },
+        }));
+    }
+
+    #[test]
+    fn error_port_envelope_from_a_minimal_old_event() {
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"boom"}"#);
+        let e = error_port_envelope("s", "t", &ev).unwrap();
+        assert_eq!(e["id"], ""); assert_eq!(e["src"], "");
+        assert_eq!(e["v"]["input"], Value::Null);
+        assert_eq!(e["v"]["error"].as_object().unwrap().len(), 3, "message, stage, tool only");
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"bad line","raw":"{oops"}"#);
+        assert_eq!(error_port_envelope("s", "t", &ev).unwrap()["v"]["error"]["raw"], "{oops");
+        assert!(error_port_envelope("s", "t", &StderrEvent::from_line("plain log")).is_none());
+    }
+
+    #[test]
+    fn pass_envelope_is_the_failed_input_unchanged() {
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"boom","input":{"x":2},"id":"e2","src":"s"}"#);
+        assert_eq!(pass_envelope(&ev).unwrap(), serde_json::json!({"t":"d","id":"e2","src":"s","v":{"x":2}}));
+        assert!(pass_envelope(&StderrEvent::from_line(r#"{"type":"error","error":"no input"}"#)).is_none());
+    }
+
+    #[tokio::test]
+    async fn abort_signal_first_fire_wins_and_wait_sees_an_earlier_fire() {
+        let a = AbortSignal::default();
+        assert!(!a.is_fired());
+        a.fire("one", "first".into());
+        a.fire("two", "second".into());
+        assert_eq!(a.stage().as_deref(), Some("one"));
+        assert_eq!(a.reason().as_deref(), Some("first"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), a.wait()).await
+            .expect("wait() after fire() returns");
+    }
+
+    #[tokio::test]
+    async fn reader_routes_errors_to_port_pass_and_abort() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let (ptx, mut prx) = tokio::sync::mpsc::channel(8);
+        let (stx, mut srx) = tokio::sync::mpsc::channel(8);
+        let abort = Arc::new(AbortSignal::default());
+        let routing = ErrorRouting { tool: "t".into(), port: Some(ptx), pass: Some(stx), abort: Some(abort.clone()) };
+        let input = b"{\"type\":\"error\",\"error\":\"boom\",\"input\":{\"x\":1},\"id\":\"e1\",\"src\":\"s\"}\n\
+                      {\"type\":\"log\",\"msg\":\"hi\"}\n".to_vec();
+        let stats = reader_task_generic(std::io::Cursor::new(input), "st".into(), logs.clone(),
+            None, None, None, Some(routing)).await.unwrap();
+        assert_eq!(stats.errors_written, 1);
+        let port: Value = serde_json::from_str(&prx.recv().await.unwrap()).unwrap();
+        assert_eq!(port["v"]["error"]["stage"], "st");
+        assert!(prx.recv().await.is_none(), "one envelope, then closed");
+        let pass: Value = serde_json::from_str(&srx.recv().await.unwrap()).unwrap();
+        assert_eq!(pass["v"], serde_json::json!({"x": 1}));
+        assert_eq!(abort.stage().as_deref(), Some("st"));
+        assert!(logs.join("st_errors.log").exists(), "errors log written as well");
+    }
+
+    #[tokio::test]
+    async fn reader_keeps_going_when_the_port_consumer_is_gone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (ptx, prx) = tokio::sync::mpsc::channel(1);
+        drop(prx);
+        let routing = ErrorRouting { tool: "t".into(), port: Some(ptx), ..Default::default() };
+        let input = "{\"type\":\"error\",\"error\":\"a\"}\n{\"type\":\"error\",\"error\":\"b\"}\n".as_bytes().to_vec();
+        let stats = reader_task_generic(std::io::Cursor::new(input), "st".into(), tmp.path().join("logs"),
+            None, None, None, Some(routing)).await.unwrap();
+        assert_eq!(stats.errors_written, 2);
     }
 }

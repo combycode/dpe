@@ -50,6 +50,10 @@ pub struct ExecutionPlan {
     pub topological_order: Vec<String>,
     /// upstream stage name → list of stage names that consume it.
     pub consumers:         BTreeMap<String, Vec<String>>,
+    /// tool stage name → stages that consume its `errors` port (`input: <stage>.errors`).
+    /// Kept apart from `consumers`: a stage read only through its errors port is still
+    /// terminal for its data output.
+    pub error_ports:       BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,7 +142,7 @@ pub fn compile_with_env(
 ) -> Result<ExecutionPlan, DagError> {
     let order = topological_order(variant).map_err(DagError::Cycle)?;
 
-    let consumers = compute_consumers(variant);
+    let (consumers, error_ports) = compute_consumers(variant);
     validate_single_consumer(variant, &consumers)?;
 
     let mut stages = BTreeMap::new();
@@ -153,6 +157,7 @@ pub fn compile_with_env(
         stages,
         topological_order: order,
         consumers,
+        error_ports,
     })
 }
 
@@ -399,19 +404,33 @@ fn kind_for_stage(
     }
 }
 
-/// Build map: upstream stage name → list of consumer stage names.
-fn compute_consumers(variant: &ResolvedVariant) -> BTreeMap<String, Vec<String>> {
-    let mut m: BTreeMap<String, Vec<String>> = BTreeMap::new();
+/// Build maps: upstream stage name → consumer stage names (data and route channels), and
+/// tool stage name → consumers of its `errors` port.
+type ConsumerMap = BTreeMap<String, Vec<String>>;
+fn compute_consumers(variant: &ResolvedVariant) -> (ConsumerMap, ConsumerMap) {
+    let mut m: ConsumerMap = BTreeMap::new();
+    let mut errors: ConsumerMap = BTreeMap::new();
     for (name, stage) in &variant.stages {
         for r in stage_input_refs(stage) {
             if r == "$input" { continue; }
-            let upstream = r.split_once('.').map(|(u, _)| u.to_string()).unwrap_or(r);
-            if variant.stages.contains_key(&upstream) {
+            let (upstream, channel) = match r.split_once('.') {
+                Some((u, c)) => (u.to_string(), Some(c.to_string())),
+                None         => (r, None),
+            };
+            let Some(up) = variant.stages.get(&upstream) else { continue };
+            if is_errors_port(up, channel.as_deref()) {
+                errors.entry(upstream).or_default().push(name.clone());
+            } else {
                 m.entry(upstream).or_default().push(name.clone());
             }
         }
     }
-    m
+    (m, errors)
+}
+
+/// `<stage>.errors` on a spawned tool stage (route stages keep a channel of that name).
+pub(crate) fn is_errors_port(upstream: &Stage, channel: Option<&str>) -> bool {
+    channel == Some(crate::validate::ERRORS_PORT) && !crate::tools::is_builtin(&upstream.tool)
 }
 
 fn stage_input_refs(stage: &Stage) -> Vec<String> {
@@ -475,7 +494,7 @@ mod tests {
             ("b", stg("y", Some(Input::One("a".into())))),
             ("c", stg("z", Some(Input::Many(vec!["a".into(), "b".into()])))),
         ]);
-        let c = compute_consumers(&v);
+        let (c, _) = compute_consumers(&v);
         // a is consumed by b and c
         assert_eq!(c.get("a").map(|v| v.len()), Some(2));
         // b is consumed by c
@@ -487,7 +506,7 @@ mod tests {
     #[test]
     fn dollar_input_excluded_from_consumer_map() {
         let v = variant(vec![("a", stg("x", Some(Input::One("$input".into()))))]);
-        let c = compute_consumers(&v);
+        let (c, _) = compute_consumers(&v);
         assert!(!c.contains_key("$input"));
     }
 
@@ -499,7 +518,7 @@ mod tests {
             ("b",   stg("y", Some(Input::One("src".into())))),
         ]);
         v.stages.get_mut("src").unwrap().tool = "non-route-tool".into();
-        let consumers = compute_consumers(&v);
+        let (consumers, _) = compute_consumers(&v);
         let err = validate_single_consumer(&v, &consumers).unwrap_err();
         assert!(matches!(err, DagError::MultipleConsumers { .. }));
     }
@@ -518,7 +537,7 @@ mod tests {
             ("a",   stg("y", Some(Input::One("r.pdf".into())))),
             ("b",   stg("y", Some(Input::One("r.xlsx".into())))),
         ]);
-        let consumers = compute_consumers(&v);
+        let (consumers, _) = compute_consumers(&v);
         assert_eq!(consumers.get("r").map(|v| v.len()), Some(2));
         assert!(validate_single_consumer(&v, &consumers).is_ok());
     }
@@ -908,5 +927,35 @@ mod tests {
             assert!(!msg.contains(": filter"),
                 "tool field was interpolated to 'filter' — should be literal: {}", msg);
         });
+    }
+
+    #[test]
+    fn errors_port_refs_are_not_data_consumers() {
+        let v = variant(vec![
+            ("src",  stg("x", Some(Input::One("$input".into())))),
+            ("next", stg("y", Some(Input::One("src".into())))),
+            ("dead", stg("z", Some(Input::One("src.errors".into())))),
+            ("dead2", stg("z", Some(Input::One("src.errors".into())))),
+        ]);
+        let (consumers, errors) = compute_consumers(&v);
+        assert_eq!(consumers.get("src"), Some(&vec!["next".to_string()]));
+        assert_eq!(errors.get("src").map(|c| c.len()), Some(2), "several stages may read one errors port");
+        assert!(validate_single_consumer(&v, &consumers).is_ok());
+    }
+
+    #[test]
+    fn route_channel_named_errors_stays_a_route_consumer() {
+        let mut route_stage = stg("route", Some(Input::One("src".into())));
+        let mut routes = indexmap::IndexMap::new();
+        routes.insert("errors".into(), "true".into());
+        route_stage.routes = Some(routes);
+        let v = variant(vec![
+            ("src", stg("x", Some(Input::One("$input".into())))),
+            ("r",   route_stage),
+            ("a",   stg("y", Some(Input::One("r.errors".into())))),
+        ]);
+        let (consumers, errors) = compute_consumers(&v);
+        assert_eq!(consumers.get("r").map(|c| c.len()), Some(1));
+        assert!(errors.is_empty());
     }
 }

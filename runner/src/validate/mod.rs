@@ -25,6 +25,7 @@ mod link;
 mod topology;
 
 pub use topology::topological_order;
+pub use link::ERRORS_PORT;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum ValidationError {
@@ -32,7 +33,7 @@ pub enum ValidationError {
     ToolUnresolved { stage: String, tool: String, reason: String },
     #[error("stage '{stage}': input references unknown stage '{reference}'")]
     UnknownInput { stage: String, reference: String },
-    #[error("stage '{stage}': input uses channel '{channel}' but upstream stage '{upstream}' is not a route stage")]
+    #[error("stage '{stage}': input uses channel '{channel}' but upstream stage '{upstream}' is not a route stage (tool stages have only the `errors` port)")]
     InputChannelNotARoute { stage: String, upstream: String, channel: String },
     #[error("stage '{stage}': input references route '{upstream}' with unknown channel '{channel}'")]
     UnknownRouteChannel { stage: String, upstream: String, channel: String },

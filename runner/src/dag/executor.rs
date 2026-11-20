@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -33,8 +34,10 @@ use crate::env::SessionContext;
 use crate::replicas::{spawn_group, wire_fan_in, wire_fan_in_collect, wire_fan_out, ReplicaGroup};
 use crate::runtime::feed_stdin;
 use crate::spawn::{graceful_stop, spawn, SpawnedStage};
+use crate::stderr::{AbortSignal, ErrorRouting};
 use crate::tools::{resolve as resolve_tool, Invocation};
-use crate::types::Stage;
+use crate::types::{OnError, Stage};
+use crate::validate::ERRORS_PORT;
 
 use super::plan::{BuiltinSpec, ExecutionPlan, PlannedKind, PlannedStage};
 use super::{DagError, InputSource, OutputSink};
@@ -137,7 +140,11 @@ pub(super) async fn execute(
 ) -> Result<ExecutionResult, DagError> {
     let session_dir = session.session_dir();
 
-    // 1. Spawn every stage (or build builtin placeholders).
+    // 1. Spawn every stage (or build builtin placeholders). Tool stages whose `errors` port
+    //    is consumed, or that set `on_error: pass|fail`, get an ErrorRouting for their
+    //    stderr reader.
+    let abort = Arc::new(AbortSignal::default());
+    let (mut ew, routing) = build_error_routing(plan, &abort);
     let mut handles: BTreeMap<String, StageHandle> = BTreeMap::new();
     let mut stderr_tasks: Vec<JoinHandle<std::io::Result<crate::stderr::ReaderStats>>> = Vec::new();
     for name in &plan.topological_order {
@@ -145,9 +152,11 @@ pub(super) async fn execute(
             .ok_or_else(|| DagError::Internal(format!("stage '{}' vanished", name)))?;
         let mut h = spawn_stage_handle_from_planned(planned, pipeline_dir, session, config)?;
         drain_stderr_to_logs(&mut h, logs_dir, &mut stderr_tasks,
-            tracer.clone(), stats_coll.clone(), log_sink.clone());
+            tracer.clone(), stats_coll.clone(), log_sink.clone(), routing.get(name).cloned());
         handles.insert(name.clone(), h);
     }
+    // The stderr readers now hold the only senders: a port closes when its stage is done.
+    drop(routing);
 
     // 2. Wire: for each stage in order, attach its upstream(s) to its input.
     let duplex_buf = config.runtime.effective_duplex_buf_bytes();
@@ -157,17 +166,27 @@ pub(super) async fn execute(
 
     for name in &plan.topological_order {
         let stage = &plan.stages[name].stage_def;
-        wire_stage_input(name, stage, &mut handles, &mut wiring_tasks, &mut leaf_stages, duplex_buf)?;
+        wire_stage_input(name, stage, &mut handles, &mut wiring_tasks, &mut leaf_stages, duplex_buf, &mut ew)?;
     }
 
     // Any stage NOT referenced as a consumer is a terminal — drain its stdout.
     for name in &plan.topological_order {
         if !plan.consumers.contains_key(name) {
-            let drain = build_terminal_drainer(name, &mut handles, &mut wiring_tasks, duplex_buf)?;
+            let drain = build_terminal_drainer(name, &mut handles, &mut wiring_tasks, duplex_buf, &mut ew)?;
             if let Some(task) = drain {
                 terminal_drain_tasks.push((name.clone(), task));
             }
         }
+    }
+
+    // Error ports: forward each stage's error envelopes to the consumers wired above. A
+    // receiver left without writers is drained anyway, so a stderr reader never blocks.
+    for (name, rx) in std::mem::take(&mut ew.port_rx) {
+        let writers = ew.port_writers.remove(&name).unwrap_or_default();
+        wiring_tasks.push(tokio::spawn(lines_to_writers(rx, writers)));
+    }
+    for (_, rx) in std::mem::take(&mut ew.pass_rx) {
+        wiring_tasks.push(tokio::spawn(lines_to_writers(rx, Vec::new())));
     }
 
     // 3. Now launch builtins (route/filter/...) whose upstream + downstream are both set.
@@ -179,11 +198,27 @@ pub(super) async fn execute(
         }
     }
 
-    // 4. Feed $input leaves.
-    feed_leaf_stages(&mut handles, &leaf_stages, &input).await?;
-
-    // 5. Await wiring tasks (they complete as pipes close).
-    for h in wiring_tasks { let _ = h.await; }
+    // 4. Feed $input leaves, then 5. await the wiring tasks (they complete as pipes close).
+    //    A stage with `on_error: fail` that reports an error cuts this short: every child is
+    //    stopped at once (step 7 with no grace) and the run fails.
+    let wiring_aborts: Vec<_> = wiring_tasks.iter().map(|h| h.abort_handle()).collect();
+    let aborted = {
+        let run = async {
+            feed_leaf_stages(&mut handles, &leaf_stages, &input).await?;
+            for h in wiring_tasks { let _ = h.await; }
+            Ok::<(), DagError>(())
+        };
+        tokio::select! {
+            r = run => { r?; false }
+            _ = abort.wait() => true,
+        }
+    };
+    let mut killed = None;
+    if aborted {
+        eprintln!("[dag] {} - stopping the run", abort.reason().unwrap_or_default());
+        for a in wiring_aborts { a.abort(); }
+        killed = Some(shutdown_and_mark(std::mem::take(&mut handles), 0, &state_coll).await);
+    }
     for h in stderr_tasks { let _ = h.await; }
 
     // 6. Drain terminals. Behavior is per OutputSink variant:
@@ -229,13 +264,32 @@ pub(super) async fn execute(
         }
     }
 
-    // 7. Graceful shutdown of spawned stages. Per-stage exit status is
-    //    folded into the StateCollector so the wire reflects truth — a
-    //    stage that exited 0 becomes Succeeded; non-zero / killed → Failed.
-    //    Builtins were already marked terminal inside launch_builtin_if_ready.
+    // 7. Graceful shutdown of spawned stages (already done if the run was aborted).
+    let (succeeded, mut failed) = match killed {
+        Some(counts) => counts,
+        None => shutdown_and_mark(handles, config.spawn.effective_sigterm_grace_ms(), &state_coll).await,
+    };
+    // `on_error: fail`: the reporting stage fails the run even if it had already exited 0.
+    let failed_on_error = abort.reason();
+    if let Some(stage) = abort.stage() {
+        state_coll.mark(&stage, crate::state::StageState::Failed);
+        failed = failed.max(1);
+    }
+
+    Ok(ExecutionResult { succeeded, failed, terminal_output, failed_on_error })
+}
+
+/// Stop every spawned stage (closing stdin, `grace_ms` before a kill) and fold each exit
+/// status into the StateCollector: exit 0 → Succeeded, non-zero / killed → Failed.
+/// Builtins were already marked terminal inside launch_builtin_if_ready.
+/// Returns (succeeded, failed) process counts.
+async fn shutdown_and_mark(
+    handles: BTreeMap<String, StageHandle>,
+    grace: u64,
+    state_coll: &crate::state::StateCollector,
+) -> (u32, u32) {
     let mut succeeded = 0u32;
     let mut failed = 0u32;
-    let grace = config.spawn.effective_sigterm_grace_ms();
     for (name, handle) in handles {
         let was_builtin = matches!(&handle,
             StageHandle::Route(_) | StageHandle::Filter(_)
@@ -263,8 +317,7 @@ pub(super) async fn execute(
             state_coll.mark(&name, outcome);
         }
     }
-
-    Ok(ExecutionResult { succeeded, failed, terminal_output })
+    (succeeded, failed)
 }
 
 /// What [`execute`] returns to the orchestrator in `mod.rs`.
@@ -272,6 +325,96 @@ pub(super) struct ExecutionResult {
     pub succeeded: u32,
     pub failed: u32,
     pub terminal_output: BTreeMap<String, Vec<u8>>,
+    /// Set when a stage with `on_error: fail` reported an error (the reason).
+    pub failed_on_error: Option<String>,
+}
+
+// ═══ Error port / on_error plumbing ════════════════════════════════════════
+
+/// Bound of the per-stage error-port and pass channels: a stage that reports errors faster
+/// than the consumer reads them slows down instead of growing memory.
+const ERROR_CHANNEL_CAP: usize = 1024;
+
+/// Receivers and consumer writers of the tool stages' `errors` ports and `on_error: pass`.
+#[derive(Default)]
+struct ErrorWiring {
+    /// stage → its error-port envelopes (present only when some stage consumes the port).
+    port_rx:      BTreeMap<String, mpsc::Receiver<String>>,
+    /// stage → writers of the stages consuming its `errors` port, collected during wiring.
+    port_writers: BTreeMap<String, Vec<BuiltinWriter>>,
+    /// stage → `on_error: pass` envelopes, merged into the stage's data output.
+    pass_rx:      BTreeMap<String, mpsc::Receiver<String>>,
+}
+
+/// Decide, per spawned tool stage, where its error events go besides the errors log.
+fn build_error_routing(
+    plan: &ExecutionPlan,
+    abort: &Arc<AbortSignal>,
+) -> (ErrorWiring, BTreeMap<String, ErrorRouting>) {
+    let mut ew = ErrorWiring::default();
+    let mut routing = BTreeMap::new();
+    for (name, planned) in &plan.stages {
+        if !matches!(planned.kind, PlannedKind::SpawnSingle | PlannedKind::SpawnReplicas { .. }) {
+            continue;
+        }
+        let mut r = ErrorRouting { tool: planned.stage_def.tool.clone(), ..Default::default() };
+        if plan.error_ports.contains_key(name) {
+            let (tx, rx) = mpsc::channel(ERROR_CHANNEL_CAP);
+            r.port = Some(tx);
+            ew.port_rx.insert(name.clone(), rx);
+        }
+        match planned.stage_def.on_error {
+            OnError::Drop => {}
+            OnError::Pass => {
+                let (tx, rx) = mpsc::channel(ERROR_CHANNEL_CAP);
+                r.pass = Some(tx);
+                ew.pass_rx.insert(name.clone(), rx);
+            }
+            OnError::Fail => r.abort = Some(abort.clone()),
+        }
+        if r.port.is_some() || r.pass.is_some() || r.abort.is_some() {
+            routing.insert(name.clone(), r);
+        }
+    }
+    (ew, routing)
+}
+
+/// `on_error: pass`: merge the failed inputs that the stage's stderr reader sends back into
+/// the stage's data output, line by line. Returns `reader` unchanged for other stages.
+fn with_pass(
+    name: &str,
+    reader: BuiltinReader,
+    ew: &mut ErrorWiring,
+    tasks: &mut Vec<JoinHandle<Result<u64, std::io::Error>>>,
+    duplex_buf: usize,
+) -> BuiltinReader {
+    let Some(rx) = ew.pass_rx.remove(name) else { return reader };
+    let (pw, pr) = tokio::io::duplex(duplex_buf);
+    tasks.push(tokio::spawn(lines_to_writers(rx, vec![Box::new(pw)])));
+    let (dw, dr) = tokio::io::duplex(duplex_buf);
+    tasks.push(tokio::spawn(fan_in_boxed(vec![reader, Box::new(pr)], Box::new(dw))));
+    Box::new(dr)
+}
+
+/// Write every line received on `rx` (newline-terminated) to all `writers`, then close them.
+/// A writer whose reader went away is dropped; the others keep receiving, and the channel is
+/// always drained so the sending stderr reader never blocks for good.
+async fn lines_to_writers(
+    mut rx: mpsc::Receiver<String>,
+    mut writers: Vec<BuiltinWriter>,
+) -> std::io::Result<u64> {
+    let mut lines = 0u64;
+    while let Some(line) = rx.recv().await {
+        let mut buf = line.into_bytes();
+        buf.push(b'\n');
+        let mut i = 0;
+        while i < writers.len() {
+            if writers[i].write_all(&buf).await.is_err() { writers.swap_remove(i); } else { i += 1; }
+        }
+        lines += 1;
+    }
+    for mut w in writers { let _ = w.flush().await; }
+    Ok(lines)
 }
 
 // ─── Stage spawning ───────────────────────────────────────────────────────
@@ -376,6 +519,7 @@ fn wire_stage_input(
     tasks: &mut Vec<JoinHandle<Result<u64, std::io::Error>>>,
     leaf_stages: &mut Vec<String>,
     duplex_buf: usize,
+    ew: &mut ErrorWiring,
 ) -> Result<(), DagError> {
     let refs = stage_input_refs(stage);
     if refs.is_empty() {
@@ -399,8 +543,10 @@ fn wire_stage_input(
     // and plain refs (pull-style: we copy from upstream's reader).
     let mut route_refs: Vec<(String, String)> = Vec::new();
     let mut plain_refs: Vec<String> = Vec::new();
+    let mut port_refs: Vec<String> = Vec::new();   // `<tool stage>.errors`
     for r in refs {
         match r.split_once('.') {
+            Some((up, ch)) if ch == ERRORS_PORT && ew.port_rx.contains_key(up) => port_refs.push(up.into()),
             Some((up, ch)) => route_refs.push((up.into(), ch.into())),
             None           => plain_refs.push(r),
         }
@@ -410,7 +556,7 @@ fn wire_stage_input(
     // consumer's writer directly to the route — no extra duplex bridge.
     // (Equivalent to the legacy behaviour for the common 1-route-channel
     // case; preserves zero-copy direct-pipe semantics for Single consumers.)
-    if route_refs.len() == 1 && plain_refs.is_empty() {
+    if route_refs.len() == 1 && plain_refs.is_empty() && port_refs.is_empty() {
         let (upstream_name, channel) = &route_refs[0];
         let writer = take_consumer_writer(handles, name, tasks, duplex_buf)?;
         return match handles.get_mut(upstream_name) {
@@ -449,9 +595,15 @@ fn wire_stage_input(
         readers.push(Box::new(dr));
     }
 
+    for up in port_refs {
+        let (dw, dr) = tokio::io::duplex(duplex_buf);
+        ew.port_writers.entry(up).or_default().push(Box::new(dw));
+        readers.push(Box::new(dr));
+    }
+
     for r in plain_refs {
         let reader = take_upstream_reader(handles, &r, tasks, duplex_buf)?;
-        readers.push(reader);
+        readers.push(with_pass(&r, reader, ew, tasks, duplex_buf));
     }
 
     debug_assert!(!readers.is_empty(), "non-$input refs must yield at least one source");
@@ -742,15 +894,30 @@ fn spawn_u64_supervisor(
 fn build_terminal_drainer(
     name: &str,
     handles: &mut BTreeMap<String, StageHandle>,
-    _tasks: &mut Vec<JoinHandle<Result<u64, std::io::Error>>>,
+    tasks: &mut Vec<JoinHandle<Result<u64, std::io::Error>>>,
     duplex_buf: usize,
+    ew: &mut ErrorWiring,
 ) -> Result<Option<JoinHandle<std::io::Result<Vec<u8>>>>, DagError> {
     match handle_kind(handles, name) {
         Some(HandleKind::Single) => {
             let Some(StageHandle::Single(s)) = handles.get_mut(name) else {
                 return Err(DagError::Internal("single handle lost".into()));
             };
-            Ok(s.stdout.take().map(|out| tokio::spawn(read_to_end(Box::new(out)))))
+            Ok(s.stdout.take().map(|out| {
+                let r = with_pass(name, Box::new(out), ew, tasks, duplex_buf);
+                tokio::spawn(read_to_end(r))
+            }))
+        }
+        Some(HandleKind::Replicas) if ew.pass_rx.contains_key(name) => {
+            let (dw, dr) = tokio::io::duplex(duplex_buf);
+            let Some(StageHandle::Replicas(group)) = handles.get_mut(name) else {
+                return Err(DagError::Internal("replicas handle lost".into()));
+            };
+            let handle = wire_fan_in(group, dw)
+                .map_err(|e| DagError::Stage { stage: name.into(), reason: e.to_string() })?;
+            tasks.push(spawn_u64_supervisor(handle));
+            let r = with_pass(name, Box::new(dr), ew, tasks, duplex_buf);
+            Ok(Some(tokio::spawn(read_to_end(r))))
         }
         Some(HandleKind::Replicas) => {
             let Some(StageHandle::Replicas(group)) = handles.get_mut(name) else {
@@ -1118,6 +1285,7 @@ fn drain_stderr_to_logs(
     tracer: crate::trace::Tracer,
     stats: crate::stderr::StatsCollector,
     log_sink: crate::stderr::LogSink,
+    routing: Option<ErrorRouting>,
 ) {
     #[allow(clippy::too_many_arguments)]
     fn spawn_drain(
@@ -1128,6 +1296,7 @@ fn drain_stderr_to_logs(
         tracer: crate::trace::Tracer,
         stats: crate::stderr::StatsCollector,
         log_sink: crate::stderr::LogSink,
+        routing: Option<ErrorRouting>,
     ) {
         tasks.push(crate::stderr::spawn_reader(
             stderr,
@@ -1136,19 +1305,20 @@ fn drain_stderr_to_logs(
             Some(tracer),
             Some(stats),
             Some(log_sink),
+            routing,
         ));
     }
     match handle {
         StageHandle::Single(s) => {
             if let Some(stderr) = s.stderr.take() {
-                spawn_drain(&s.stage_id, stderr, logs_dir, tasks, tracer, stats, log_sink);
+                spawn_drain(&s.stage_id, stderr, logs_dir, tasks, tracer, stats, log_sink, routing);
             }
         }
         StageHandle::Replicas(group) => {
             for inst in group.instances.iter_mut() {
                 if let Some(stderr) = inst.stderr.take() {
                     spawn_drain(&inst.stage_id, stderr, logs_dir, tasks,
-                                tracer.clone(), stats.clone(), log_sink.clone());
+                                tracer.clone(), stats.clone(), log_sink.clone(), routing.clone());
                 }
             }
         }

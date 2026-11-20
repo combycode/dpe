@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 <!-- Add entries under the section that fits: BREAKING / Added / Changed / Deprecated / Removed / Fixed / Security. Keep them short — full context belongs in the PR description. -->
 
+### Added
+
+- **`errors` port on tool stages.** `input: <stage>.errors` receives one envelope per error the stage reports (`ctx.error`, or an exception caught by the SDK): `{t:"d", id, src, v:{error:{message, stage, tool, code?, retryable?, details?}, input}}`, with the failed input's `id` / `src`. Works with existing tool binaries. Several stages may read one port; replicas merge into it. The stage's `<stage>_errors.log` is still written. Without a consumer nothing changes. A route stage's own channel named `errors` keeps working as before.
+- **`on_error` now applies to tool stages** (it was honoured by route / filter only): `drop` (default, as before), `pass` (the failed input goes on downstream unchanged), `fail` (the first error stops the run).
+
+### Changed
+
+- **`dpe run` exits 1 when a stage failed** - a tool crashed, exited non-zero, or stopped the run with `on_error: fail` - and prints `[FAILED]` instead of `[OK]`; the `--json` summary gains `failed` and `failedOnError`. It used to exit 0 with `[OK] ... 1 failed`. Errors reported with `ctx.error` alone still exit 0. Scripts that read the exit code now see real failures.
+
 ## [2.1.0] — 2026-11-19
 
 Minor release: one new setting (`path_tokens`), two cache settings that were ignored now work, YAML parser update, dependency and security refresh. Pipelines that ran on 2.0.4 run unchanged, except the YAML edge cases listed under Changed.

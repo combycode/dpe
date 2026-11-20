@@ -18,6 +18,9 @@ pub(super) fn run(variant: &ResolvedVariant, errs: &mut Vec<ValidationError>) {
     }
 }
 
+/// Name of the implicit error port of a tool stage: `input: <stage>.errors`.
+pub const ERRORS_PORT: &str = "errors";
+
 fn collect_route_channels(variant: &ResolvedVariant) -> HashMap<String, BTreeSet<String>> {
     let mut m = HashMap::new();
     for (name, stage) in &variant.stages {
@@ -68,6 +71,12 @@ fn check_inputs(
         }
 
         if let Some(channel) = channel_opt {
+            // Every spawned-tool stage has an implicit `errors` port (route stages keep
+            // their own channel of that name).
+            if channel == ERRORS_PORT && !route_channels.contains_key(upstream)
+                && !crate::tools::is_builtin(&all_stages[upstream].tool) {
+                continue;
+            }
             let Some(chans) = route_channels.get(upstream) else {
                 errs.push(ValidationError::InputChannelNotARoute {
                     stage: name.into(), upstream: upstream.into(),
@@ -170,5 +179,32 @@ mod tests {
         ]);
         let errs = validate(&v, tmp.path(), &RunnerConfig::default()).unwrap_err();
         assert!(errs.iter().any(|e| matches!(e, ValidationError::NoInput { .. })));
+    }
+
+    #[test] fn errors_port_of_a_tool_stage_is_a_valid_input() {
+        let tmp = dummy();
+        let v = mk_variant(vec![
+            ("t", stg("x", Some(Input::One("$input".into())))),
+            ("d", stg("y", Some(Input::One("t.errors".into())))),
+        ]);
+        let errs = validate(&v, tmp.path(), &RunnerConfig::default()).err().unwrap_or_default();
+        assert!(!errs.iter().any(|e| matches!(e, ValidationError::InputChannelNotARoute { .. })), "{errs:?}");
+    }
+
+    #[test] fn other_channels_of_a_tool_stage_and_errors_of_a_builtin_are_rejected() {
+        let tmp = dummy();
+        let mut f = stg("filter", Some(Input::One("t".into())));
+        f.expression = Some("true".into());
+        let v = mk_variant(vec![
+            ("t",  stg("x", Some(Input::One("$input".into())))),
+            ("f",  f),
+            ("a",  stg("y", Some(Input::One("t.other".into())))),
+            ("b",  stg("y", Some(Input::One("f.errors".into())))),
+        ]);
+        let errs = validate(&v, tmp.path(), &RunnerConfig::default()).unwrap_err();
+        let bad: Vec<&str> = errs.iter().filter_map(|e| match e {
+            ValidationError::InputChannelNotARoute { stage, .. } => Some(stage.as_str()), _ => None,
+        }).collect();
+        assert!(bad.contains(&"a") && bad.contains(&"b"), "{errs:?}");
     }
 }

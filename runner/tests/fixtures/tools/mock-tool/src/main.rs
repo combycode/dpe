@@ -13,7 +13,10 @@
 //!     "crash_after":      null,               // exit(1) after N inputs processed
 //!     "delay_ms":         0,                  // sleep before emitting each output
 //!     "emit_shutdown_meta": false,            // emit final meta envelope on EOF
-//!     "fail_on_startup":  false               // exit(2) without reading stdin
+//!     "fail_on_startup":  false,              // exit(2) without reading stdin
+//!     "error_on":         null | { "field": "path", "equals": "...", "code": "...", "retryable": bool }
+//!                                             // report an SDK-style error event for matching
+//!                                             // envelopes instead of emitting them
 //!   }
 //!
 //! Input envelope: expects v as an object (passes through unknown shapes
@@ -50,6 +53,20 @@ struct Settings {
     /// Copy these environment variables into `v._env` (runner wiring tests).
     #[serde(default)]
     echo_env: Vec<String>,
+    /// Report an error (like an SDK's ctx.error) for matching envelopes instead of emitting them.
+    #[serde(default)]
+    error_on: Option<ErrorOn>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ErrorOn {
+    field: String,
+    equals: Value,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    retryable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -106,6 +123,24 @@ fn main() {
             if envelope_field_equals(&env, &pred.field, &pred.equals) {
                 dropped += 1;
                 emit_drop_trace(&env, &settings.tag);
+                maybe_crash_after(&settings, processed);
+                continue;
+            }
+        }
+
+        // Error predicate: an SDK-style error event on stderr, nothing on stdout.
+        if let Some(e) = &settings.error_on {
+            if envelope_field_equals(&env, &e.field, &e.equals) {
+                let mut ev = serde_json::json!({
+                    "type": "error",
+                    "error": format!("mock error: {} == {}", e.field, e.equals),
+                    "input": env.get("v").cloned().unwrap_or(Value::Null),
+                    "id":  env.get("id").cloned().unwrap_or(Value::Null),
+                    "src": env.get("src").cloned().unwrap_or(Value::Null),
+                });
+                if let Some(c) = &e.code { ev["code"] = Value::String(c.clone()); }
+                if let Some(r) = e.retryable { ev["retryable"] = Value::Bool(r); }
+                let _ = writeln!(io::stderr(), "{}", ev);
                 maybe_crash_after(&settings, processed);
                 continue;
             }

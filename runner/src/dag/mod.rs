@@ -115,6 +115,14 @@ pub struct DagReport {
     pub stages_succeeded: u32,
     pub stages_failed: u32,
     pub terminal_output: BTreeMap<String, Vec<u8>>,
+    /// Set when a stage with `on_error: fail` stopped the run (the reason).
+    pub failed_on_error: Option<String>,
+}
+
+impl DagReport {
+    /// A stage failed (crashed, exited non-zero, or stopped the run via `on_error: fail`).
+    /// Errors a tool reports with `ctx.error` alone do not fail the run.
+    pub fn failed(&self) -> bool { self.stages_failed > 0 || self.failed_on_error.is_some() }
 }
 
 // ═══ Entry point ═══════════════════════════════════════════════════════════
@@ -296,6 +304,7 @@ pub async fn run_variant_with_stats(
         stages_succeeded: exec_result.succeeded,
         stages_failed: exec_result.failed,
         terminal_output: exec_result.terminal_output,
+        failed_on_error: exec_result.failed_on_error,
     })
 }
 
