@@ -73,8 +73,7 @@ fn check_inputs(
         if let Some(channel) = channel_opt {
             // Every spawned-tool stage has an implicit `errors` port (route stages keep
             // their own channel of that name).
-            if channel == ERRORS_PORT && !route_channels.contains_key(upstream)
-                && !crate::tools::is_builtin(&all_stages[upstream].tool) {
+            if channel == ERRORS_PORT && !crate::tools::is_builtin(&all_stages[upstream].tool) {
                 continue;
             }
             let Some(chans) = route_channels.get(upstream) else {

@@ -185,7 +185,9 @@ pub(super) async fn execute(
         let writers = ew.port_writers.remove(&name).unwrap_or_default();
         wiring_tasks.push(tokio::spawn(lines_to_writers(rx, writers)));
     }
-    for (_, rx) in std::mem::take(&mut ew.pass_rx) {
+    for (name, rx) in std::mem::take(&mut ew.pass_rx) {
+        // Not reachable today (every data output goes through with_pass); never block anyway.
+        eprintln!("[dag] internal: on_error: pass output of '{name}' is not wired - passed inputs are dropped");
         wiring_tasks.push(tokio::spawn(lines_to_writers(rx, Vec::new())));
     }
 
@@ -198,14 +200,20 @@ pub(super) async fn execute(
         }
     }
 
-    // 4. Feed $input leaves, then 5. await the wiring tasks (they complete as pipes close).
-    //    A stage with `on_error: fail` that reports an error cuts this short: every child is
-    //    stopped at once (step 7 with no grace) and the run fails.
+    // 4. Feed $input leaves, 5. await the wiring tasks (they complete as pipes close) and
+    //    collect the terminal outputs. A stage with `on_error: fail` that reports an error at
+    //    any point of this cuts it short: every child is stopped at once (no grace) and the
+    //    run fails. (Once all of this is done every stage has closed its stdout, so a later
+    //    error no longer needs a kill - it still fails the run, see shutdown_and_mark.)
     let wiring_aborts: Vec<_> = wiring_tasks.iter().map(|h| h.abort_handle()).collect();
+    let drain_aborts: Vec<_> = terminal_drain_tasks.iter().map(|(_, h)| h.abort_handle()).collect();
+    type Drained = (String, Result<std::io::Result<Vec<u8>>, tokio::task::JoinError>);
+    let mut drained: Vec<Drained> = Vec::new();
     let aborted = {
         let run = async {
             feed_leaf_stages(&mut handles, &leaf_stages, &input).await?;
             for h in wiring_tasks { let _ = h.await; }
+            for (name, task) in terminal_drain_tasks { drained.push((name, task.await)); }
             Ok::<(), DagError>(())
         };
         tokio::select! {
@@ -216,9 +224,12 @@ pub(super) async fn execute(
     let mut killed = None;
     if aborted {
         eprintln!("[dag] {} - stopping the run", abort.reason().unwrap_or_default());
-        for a in wiring_aborts { a.abort(); }
-        killed = Some(shutdown_and_mark(std::mem::take(&mut handles), 0, &state_coll).await);
+        for a in wiring_aborts.iter().chain(&drain_aborts) { a.abort(); }
+        killed = Some(shutdown_and_mark(std::mem::take(&mut handles), 0, &state_coll,
+                                        abort.stage().as_deref()).await);
     }
+    // Every child has exited (or been killed): each stderr reader sees EOF and finishes,
+    // having routed every error event - including a late `on_error: fail`.
     for h in stderr_tasks { let _ = h.await; }
 
     // 6. Drain terminals. Behavior is per OutputSink variant:
@@ -229,8 +240,8 @@ pub(super) async fn execute(
     // Persisting terminal output to disk is a data path: failures here
     // are visible to users, so log loudly.
     let mut terminal_output: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for (name, task) in terminal_drain_tasks {
-        match task.await {
+    for (name, res) in drained {
+        match res {
             Ok(Ok(bytes)) => {
                 match &output {
                     OutputSink::Discard => {
@@ -265,28 +276,26 @@ pub(super) async fn execute(
     }
 
     // 7. Graceful shutdown of spawned stages (already done if the run was aborted).
-    let (succeeded, mut failed) = match killed {
+    let (succeeded, failed) = match killed {
         Some(counts) => counts,
-        None => shutdown_and_mark(handles, config.spawn.effective_sigterm_grace_ms(), &state_coll).await,
+        None => shutdown_and_mark(handles, config.spawn.effective_sigterm_grace_ms(), &state_coll,
+                                  abort.stage().as_deref()).await,
     };
-    // `on_error: fail`: the reporting stage fails the run even if it had already exited 0.
     let failed_on_error = abort.reason();
-    if let Some(stage) = abort.stage() {
-        state_coll.mark(&stage, crate::state::StageState::Failed);
-        failed = failed.max(1);
-    }
 
     Ok(ExecutionResult { succeeded, failed, terminal_output, failed_on_error })
 }
 
 /// Stop every spawned stage (closing stdin, `grace_ms` before a kill) and fold each exit
 /// status into the StateCollector: exit 0 → Succeeded, non-zero / killed → Failed.
-/// Builtins were already marked terminal inside launch_builtin_if_ready.
-/// Returns (succeeded, failed) process counts.
+/// `failed_stage` (the one that stopped the run with `on_error: fail`) counts as failed
+/// whatever its exit status. Builtins were already marked terminal inside
+/// launch_builtin_if_ready. Returns (succeeded, failed) process counts.
 async fn shutdown_and_mark(
     handles: BTreeMap<String, StageHandle>,
     grace: u64,
     state_coll: &crate::state::StateCollector,
+    failed_stage: Option<&str>,
 ) -> (u32, u32) {
     let mut succeeded = 0u32;
     let mut failed = 0u32;
@@ -297,10 +306,11 @@ async fn shutdown_and_mark(
             | StageHandle::Spread(_) | StageHandle::Toggle(_)
         );
         let statuses = shutdown_handle(handle, grace).await;
-        let mut all_ok = true;
+        let forced = failed_stage == Some(name.as_str());
+        let mut all_ok = !forced;
         for st in &statuses {
             match st {
-                Ok(es) if es.success() => succeeded += 1,
+                Ok(es) if es.success() && !forced => succeeded += 1,
                 Ok(_)  => { failed += 1; all_ok = false; }
                 Err(_) => { failed += 1; all_ok = false; }
             }

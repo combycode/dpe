@@ -271,13 +271,88 @@ stages:
     tool: mock-tool
     input: extract
 "#);
-    let started = std::time::Instant::now();
-    let r = run(&tmp, seed(200)).await;       // ~4 s if the run were not stopped
+    let r = run(&tmp, seed(200)).await;       // ~4 s and 199 envelopes if the run were not stopped
     assert!(r.report.failed());
     let reason = r.report.failed_on_error.clone().expect("failed_on_error");
     assert!(reason.contains("extract") && reason.contains("mock error"), "{reason}");
-    assert!(r.report.stages_failed >= 1);
-    assert!(started.elapsed() < std::time::Duration::from_secs(3), "stopped early: {:?}", started.elapsed());
+    let got = lines(&r, "next").len();
+    assert!(got < 100, "the run went on after the error: {got} envelopes reached `next`");
+}
+
+#[tokio::test]
+async fn on_error_fail_stops_a_terminal_stage_too() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  extract:
+    tool: mock-tool
+    on_error: fail
+    settings: { delay_ms: 20, error_on: { field: v.x, equals: 2 } }
+    input: $input
+"#);
+    let r = run(&tmp, seed(200)).await;
+    assert!(r.report.failed());
+    let got = lines(&r, "extract").len();
+    assert!(got < 100, "terminal stage kept running: {got} envelopes");
+    assert_eq!(r.report.stages_succeeded, 0, "the stage that stopped the run is not a success");
+}
+
+#[tokio::test]
+async fn on_error_fail_that_fires_after_the_stage_ended_still_fails_it() {
+    // No delay: the stage usually has exited 0 before its error event is read.
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  extract:
+    tool: mock-tool
+    on_error: fail
+    settings: { error_on: { field: v.x, equals: 2 } }
+    input: $input
+"#);
+    let r = run(&tmp, seed(3)).await;
+    assert!(r.report.failed_on_error.is_some());
+    assert_eq!((r.report.stages_succeeded, r.report.stages_failed), (0, 1));
+}
+
+#[tokio::test]
+async fn on_error_pass_on_terminal_replicas_and_in_a_fan_in() {
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  src:
+    tool: mock-tool
+    input: $input
+  rep:
+    tool: mock-tool
+    replicas: 2
+    on_error: pass
+    settings: { error_on: { field: v.x, equals: 2 } }
+    input: src
+"#);
+    let r = run(&tmp, seed(4)).await;
+    assert_eq!(xs(&lines(&r, "rep")), vec![1, 2, 3, 4], "terminal replicas keep the passed input");
+
+    let tmp = build_pipeline(r#"
+pipeline: {NAME}
+variant: main
+stages:
+  a:
+    tool: mock-tool
+    on_error: pass
+    settings: { error_on: { field: v.x, equals: 2 } }
+    input: $input
+  b:
+    tool: mock-tool
+    input: $input
+  both:
+    tool: mock-tool
+    input: [a, b]
+"#);
+    let r = run(&tmp, seed(3)).await;
+    assert_eq!(xs(&lines(&r, "both")), vec![1, 1, 2, 2, 3, 3], "fan-in gets a's passed input");
 }
 
 #[tokio::test]

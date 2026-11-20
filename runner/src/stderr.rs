@@ -117,17 +117,9 @@ pub enum StderrEvent {
         id:  Option<String>,
         #[serde(default)]
         src: Option<String>,
-        /// Optional detail from `ctx.error(v, err, extra)` (SDKs that send it); older
-        /// tools omit these and the error envelope simply leaves them out.
-        #[serde(default)]
-        code: Option<String>,
-        #[serde(default)]
-        retryable: Option<bool>,
-        #[serde(default)]
-        details: Option<Value>,
-        /// Start of an input line the SDK could not parse as an envelope.
-        #[serde(default)]
-        raw: Option<String>,
+        /// `code` / `retryable` / `details` / `raw`, when the tool sent them.
+        #[serde(flatten)]
+        detail: Box<ErrorDetail>,
     },
     /// Framework-emitted before each `process_input` call. Used to count
     /// `rows_in` for every stage that reads stdin — including pass-through
@@ -160,6 +152,23 @@ pub enum StderrEvent {
 
 fn default_level() -> String { "info".into() }
 
+/// Optional detail of an error event, from `ctx.error(v, err, extra)` in SDKs that send it;
+/// older tools omit it and the error envelope simply leaves it out. Any JSON type is accepted
+/// so an odd value (`"code": 404`) never turns the error into a log line; [`error_extras`]
+/// normalises them.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ErrorDetail {
+    #[serde(default)]
+    pub code: Option<Value>,
+    #[serde(default)]
+    pub retryable: Option<Value>,
+    #[serde(default)]
+    pub details: Option<Value>,
+    /// Start of an input line the SDK could not parse as an envelope.
+    #[serde(default)]
+    pub raw: Option<Value>,
+}
+
 impl StderrEvent {
     pub fn from_line(line: &str) -> Self {
         match serde_json::from_str::<Self>(line) {
@@ -188,8 +197,12 @@ pub struct AbortSignal {
 impl AbortSignal {
     /// First call wins; later calls (other errors, other stages) are ignored.
     pub fn fire(&self, stage: &str, reason: String) {
-        if !self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-            *self.first.lock().unwrap() = Some((stage.to_string(), reason));
+        // Store (stage, reason) before raising the flag, so whoever sees the flag also
+        // sees the reason.
+        let mut first = self.first.lock().unwrap();
+        if first.is_none() {
+            *first = Some((stage.to_string(), reason));
+            self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
             self.notify.notify_one();   // stores a permit if nobody waits yet
         }
     }
@@ -221,23 +234,43 @@ pub struct ErrorRouting {
 /// `id` / `src` are the failed input's (as when an SDK passes an envelope through); they are
 /// empty strings when the tool did not send them. `None` for non-error events.
 pub fn error_port_envelope(stage: &str, tool: &str, ev: &StderrEvent) -> Option<Value> {
-    let StderrEvent::Error { error, input, id, src, code, retryable, details, raw } = ev else {
-        return None;
-    };
+    let StderrEvent::Error { error, input, id, src, .. } = ev else { return None };
     let mut e = serde_json::Map::new();
     e.insert("message".into(), Value::String(error.clone()));
     e.insert("stage".into(),   Value::String(stage.to_string()));
     e.insert("tool".into(),    Value::String(tool.to_string()));
-    if let Some(c) = code      { e.insert("code".into(),      Value::String(c.clone())); }
-    if let Some(r) = retryable { e.insert("retryable".into(), Value::Bool(*r)); }
-    if let Some(d) = details   { e.insert("details".into(),   d.clone()); }
-    if let Some(r) = raw       { e.insert("raw".into(),       Value::String(r.clone())); }
+    e.extend(error_extras(ev));
     Some(serde_json::json!({
         "t": "d",
         "id":  id.clone().unwrap_or_default(),
         "src": src.clone().unwrap_or_default(),
         "v":   { "error": Value::Object(e), "input": input.clone().unwrap_or(Value::Null) },
     }))
+}
+
+/// The optional fields of an error event, normalised: `code` as a string (a number such as
+/// a Mongo or HTTP code becomes "11000" / "404"), `retryable` as a bool (also from
+/// "true" / "false"), `details` as sent, `raw` as a string. Anything unusable is left out.
+pub fn error_extras(ev: &StderrEvent) -> serde_json::Map<String, Value> {
+    let mut m = serde_json::Map::new();
+    let StderrEvent::Error { detail, .. } = ev else { return m };
+    let ErrorDetail { code, retryable, details, raw } = detail.as_ref();
+    let as_text = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Null      => None,
+        other            => Some(other.to_string()),
+    };
+    if let Some(c) = code.as_ref().and_then(as_text) { m.insert("code".into(), Value::String(c)); }
+    let retry = match retryable {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("true")  => Some(true),
+        Some(Value::String(s)) if s.eq_ignore_ascii_case("false") => Some(false),
+        _ => None,
+    };
+    if let Some(b) = retry { m.insert("retryable".into(), Value::Bool(b)); }
+    if let Some(d) = details.as_ref().filter(|d| !d.is_null()) { m.insert("details".into(), d.clone()); }
+    if let Some(r) = raw.as_ref().and_then(as_text) { m.insert("raw".into(), Value::String(r)); }
+    m
 }
 
 /// `on_error: pass`: the failed input, unchanged. `None` when the event carries no input
@@ -454,6 +487,7 @@ where R: AsyncRead + Unpin,
                     if let Some(v) = input.clone() { rec.insert("input".into(), v); }
                     if let Some(v) = id.clone()    { rec.insert("id".into(),    Value::String(v)); }
                     if let Some(v) = src.clone()   { rec.insert("src".into(),   Value::String(v)); }
+                    rec.extend(error_extras(&event));
                     let serialised = serde_json::to_string(&Value::Object(rec))
                         .unwrap_or_else(|_| trimmed.to_string());
                     w.write_all(serialised.as_bytes()).await?;
@@ -493,20 +527,25 @@ where R: AsyncRead + Unpin,
 /// Feed one error event to the stage's [`ErrorRouting`]. A closed port / pass channel means
 /// its consumer is gone; the error is still in the errors log, so it is not an error here.
 async fn route_error(event: &StderrEvent, stage_id: &str, r: &ErrorRouting, tracer: Option<&Tracer>) {
+    // Trace the envelopes the runner emits on the stage's behalf, so `dpe trace` shows them.
+    let trace = |env: &Value, key: &str, val: &str| {
+        if let Some(tr) = tracer {
+            let src = env["src"].as_str().unwrap_or_default().to_string();
+            let id  = env["id"].as_str().unwrap_or_default().to_string();
+            let mut labels = BTreeMap::new();
+            labels.insert(key.to_string(), Value::String(val.into()));
+            tr.emit(TraceEvent::now(stage_id.to_string(), Src::One(src)).with_id(id).with_labels(labels));
+        }
+    };
     if let Some(tx) = &r.port {
         if let Some(env) = error_port_envelope(stage_id, &r.tool, event) {
-            if let Some(tr) = tracer {
-                let src = env["src"].as_str().unwrap_or_default().to_string();
-                let id  = env["id"].as_str().unwrap_or_default().to_string();
-                let mut labels = BTreeMap::new();
-                labels.insert("port".to_string(), Value::String("errors".into()));
-                tr.emit(TraceEvent::now(stage_id.to_string(), Src::One(src)).with_id(id).with_labels(labels));
-            }
+            trace(&env, "port", "errors");
             let _ = tx.send(env.to_string()).await;
         }
     }
     if let Some(tx) = &r.pass {
         if let Some(env) = pass_envelope(event) {
+            trace(&env, "on_error", "pass");
             let _ = tx.send(env.to_string()).await;
         }
     }
@@ -836,6 +875,37 @@ mod tests {
         assert_eq!(pass["v"], serde_json::json!({"x": 1}));
         assert_eq!(abort.stage().as_deref(), Some("st"));
         assert!(logs.join("st_errors.log").exists(), "errors log written as well");
+    }
+
+    #[test]
+    fn odd_optional_field_types_never_lose_the_error() {
+        // A Mongo / HTTP style numeric code and a string bool: still an Error event.
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"dup key","code":11000,"retryable":"true"}"#);
+        assert!(matches!(ev, StderrEvent::Error { .. }), "{ev:?}");
+        let x = error_extras(&ev);
+        assert_eq!(x["code"], "11000");
+        assert_eq!(x["retryable"], true);
+        let ev = StderrEvent::from_line(r#"{"type":"error","error":"e","code":{"a":1},"retryable":5,"details":null,"raw":["x"]}"#);
+        assert!(matches!(ev, StderrEvent::Error { .. }), "{ev:?}");
+        let x = error_extras(&ev);
+        assert_eq!(x["code"], r#"{"a":1}"#);
+        assert!(x.get("retryable").is_none(), "unusable retryable is left out");
+        assert!(x.get("details").is_none());
+        assert_eq!(x["raw"], r#"["x"]"#);
+        // Unknown keys are still ignored, as before.
+        assert!(matches!(StderrEvent::from_line(r#"{"type":"error","error":"e","extra":1}"#), StderrEvent::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn errors_log_keeps_the_optional_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("logs");
+        let input = "{\"type\":\"error\",\"error\":\"e\",\"code\":404,\"retryable\":true}\n".as_bytes().to_vec();
+        reader_task_generic(std::io::Cursor::new(input), "st".into(), logs.clone(), None, None, None, None)
+            .await.unwrap();
+        let rec: Value = serde_json::from_str(std::fs::read_to_string(logs.join("st_errors.log")).unwrap().trim()).unwrap();
+        assert_eq!(rec["code"], "404");
+        assert_eq!(rec["retryable"], true);
     }
 
     #[tokio::test]
